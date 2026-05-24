@@ -1,0 +1,21 @@
+---
+# aqua - Declarative CLI Version Manager
+# https://aquaproj.github.io/
+# https://aquaproj.github.io/docs/reference/security/checksum/
+checksum:
+  enabled: true
+  require_checksum: true
+registries:
+# https://github.com/aquaproj/aqua-registry
+- type: standard
+  ref: v4.515.0 # renovate: depName=aquaproj/aqua-registry
+  supported_envs:
+    - linux
+# aqua update-checksum --deep --prune
+packages:
+- name: casey/just@1.51.0
+# go
+- name: golang/go@1.26.3
+- name: golangci/golangci-lint@v2.12.2
+- name: goreleaser/goreleaser@v2.15.4
+- name: upx/upx@v5.1.1

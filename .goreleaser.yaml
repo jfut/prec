@@ -1,0 +1,120 @@
+version: 2
+
+project_name: prec
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+metadata:
+  mod_timestamp: "{{ .CommitTimestamp }}"
+
+report_sizes: true
+
+builds:
+  - id: prec
+    # CLI viewer binary.
+    binary: prec
+    main: ./cmd/prec
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}}
+
+  - id: precd
+    # Daemon binary.
+    binary: precd
+    main: ./cmd/precd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}}
+
+upx:
+  - enabled: true
+    lzma: true
+
+archives:
+  - id: binaries
+    ids:
+      - prec
+      - precd
+    formats: ["tar.gz"]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    builds_info:
+      group: root
+      owner: root
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+checksum:
+  name_template: "checksums.txt"
+
+nfpms:
+  - id: prec
+    package_name: prec
+    file_name_template: "{{ .ConventionalFileName }}"
+    ids:
+      - prec
+      - precd
+    description: |-
+      prec command execution logger (includes prec and precd)
+    maintainer: Jun Futagawa <jfut@integ.jp>
+    license: Apache-2.0
+    vendor: prec project
+    bindir: /usr/bin
+    section: utils
+    formats:
+      - apk
+      - deb
+      - rpm
+      - archlinux
+    contents:
+      - src: /usr/bin/precd
+        dst: /usr/sbin/precd
+        type: symlink
+      - src: ./packaging/precd.conf.example
+        dst: /etc/prec/precd.conf
+        type: config|noreplace
+        file_info:
+          mode: 0640
+      - src: ./packaging/systemd/precd.service
+        dst: /usr/lib/systemd/system/precd.service
+        file_info:
+          mode: 0644
+      - src: ./packaging/logrotate/prec
+        dst: /etc/logrotate.d/prec
+        file_info:
+          mode: 0644
+    scripts:
+      postinstall: ./packaging/nfpm/precd.postinstall.sh
+      postremove: ./packaging/nfpm/precd.postremove.sh
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package

@@ -1,0 +1,46 @@
+# Destination JSONL log file.
+# log_path = "/var/log/prec/prec.log"
+
+# Log compression mode.
+# Supported: "no", "gz", "zstd" (default: "zstd")
+# compress = "zstd"
+
+# Compression level for selected compressor.
+# gzip: -3..9 (default when omitted: -1)
+# zstd: 1..22 (default when omitted: 3)
+# no: ignored
+# compress_level = 3
+
+# Store only source=user events when true.
+# Example: user_only = true
+# user_only = false
+
+# Action when the perf ring reports dropped samples.
+# "log": write collector_loss records with dropped counts (default)
+# "ignore": do not write dropped-sample records
+# "stop": write collector_loss record, then stop precd with an error
+# lost_samples_action = "log"
+
+# Default action when no filter rule matches.
+# Supported: "allow", "deny" (default: "allow")
+# filter_default = "allow"
+
+# Ordered filter rules.
+# Prefix each rule with:
+#   + to allow matched events
+#   - to deny matched events
+# Rules are evaluated from top to bottom. The first matched rule wins.
+# Query syntax follows prec --query.
+# Example:
+# filter = [
+#   "-exe~=ls",
+#   "-exe~=dnf",
+#   "+source=user&&uid>=1000",
+# ]
+# filter = []
+
+# Maximum characters recorded per single argument.
+# max_arg_length = 1024
+
+# Maximum number of arguments to record.
+# max_args = 128
