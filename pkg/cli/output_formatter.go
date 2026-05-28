@@ -144,10 +144,6 @@ type treeRenderNode struct {
 	depth int
 }
 
-func renderEventTree(eventsIn []events.CommandEvent, opt outputOptions) []string {
-	return renderEventTreeWithFormatter(eventsIn, newOutputFormatter(opt))
-}
-
 func renderEventTreeWithFormatter(eventsIn []events.CommandEvent, formatter outputFormatter) []string {
 	nodes := make([]treeRenderNode, 0, len(eventsIn))
 	pidToIndex := make(map[int]int, len(eventsIn))

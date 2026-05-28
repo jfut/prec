@@ -475,10 +475,12 @@ func (s *Service) handleLostSamples(lost uint64) error {
 }
 
 func buildExecTraceInstructions(eventsMapFD int, filenameDataLocOffset int16) asm.Instructions {
-	return asm.Instructions{
+	instructions := asm.Instructions{
 		// Save tracepoint context in R6 for reuse across helper calls.
 		asm.Mov.Reg(asm.R6, asm.R1),
-
+	}
+	instructions = append(instructions, buildPerfSampleStackZeroInstructions()...)
+	instructions = append(instructions,
 		// Mark this sample as an exec event.
 		asm.Mov.Imm(asm.R0, perfEventTypeExec),
 		asm.StoreMem(asm.RFP, perfSampleStackStart+perfSampleTypeOffset, asm.R0, asm.Byte),
@@ -513,14 +515,17 @@ func buildExecTraceInstructions(eventsMapFD int, filenameDataLocOffset int16) as
 		asm.FnPerfEventOutput.Call(),
 		asm.Mov.Imm(asm.R0, 0),
 		asm.Return(),
-	}
+	)
+	return instructions
 }
 
 func buildExitStatusTraceInstructions(eventsMapFD int, exitCodeOffset int16, exitCodeSize asm.Size, eventType int) asm.Instructions {
-	return asm.Instructions{
+	instructions := asm.Instructions{
 		// Save tracepoint context in R6 for reuse across helper calls.
 		asm.Mov.Reg(asm.R6, asm.R1),
-
+	}
+	instructions = append(instructions, buildPerfSampleStackZeroInstructions()...)
+	instructions = append(instructions,
 		// Mark this sample as an exit-status event.
 		asm.Mov.Imm(asm.R0, int32(eventType)),
 		asm.StoreMem(asm.RFP, perfSampleStackStart+perfSampleTypeOffset, asm.R0, asm.Byte),
@@ -543,14 +548,17 @@ func buildExitStatusTraceInstructions(eventsMapFD int, exitCodeOffset int16, exi
 		asm.FnPerfEventOutput.Call(),
 		asm.Mov.Imm(asm.R0, 0),
 		asm.Return(),
-	}
+	)
+	return instructions
 }
 
 func buildProcessExitTraceInstructions(eventsMapFD int) asm.Instructions {
-	return asm.Instructions{
+	instructions := asm.Instructions{
 		// Save tracepoint context in R6 for perf_event_output helper.
 		asm.Mov.Reg(asm.R6, asm.R1),
-
+	}
+	instructions = append(instructions, buildPerfSampleStackZeroInstructions()...)
+	instructions = append(instructions,
 		// Mark this sample as a process-exit event.
 		asm.Mov.Imm(asm.R0, perfEventTypeProcessExit),
 		asm.StoreMem(asm.RFP, perfSampleStackStart+perfSampleTypeOffset, asm.R0, asm.Byte),
@@ -570,14 +578,17 @@ func buildProcessExitTraceInstructions(eventsMapFD int) asm.Instructions {
 		asm.FnPerfEventOutput.Call(),
 		asm.Mov.Imm(asm.R0, 0),
 		asm.Return(),
-	}
+	)
+	return instructions
 }
 
 func buildExecEnterTraceInstructions(eventsMapFD int, filenameOffset int16, filenameSize asm.Size) asm.Instructions {
-	return asm.Instructions{
+	instructions := asm.Instructions{
 		// Save tracepoint context in R6 for reuse across helper calls.
 		asm.Mov.Reg(asm.R6, asm.R1),
-
+	}
+	instructions = append(instructions, buildPerfSampleStackZeroInstructions()...)
+	instructions = append(instructions,
 		asm.Mov.Imm(asm.R0, perfEventTypeExecEnter),
 		asm.StoreMem(asm.RFP, perfSampleStackStart+perfSampleTypeOffset, asm.R0, asm.Byte),
 
@@ -604,14 +615,17 @@ func buildExecEnterTraceInstructions(eventsMapFD int, filenameOffset int16, file
 		asm.FnPerfEventOutput.Call(),
 		asm.Mov.Imm(asm.R0, 0),
 		asm.Return(),
-	}
+	)
+	return instructions
 }
 
 func buildExecResultTraceInstructions(eventsMapFD int, retOffset int16, retSize asm.Size) asm.Instructions {
-	return asm.Instructions{
+	instructions := asm.Instructions{
 		// Save tracepoint context in R6 for reuse across helper calls.
 		asm.Mov.Reg(asm.R6, asm.R1),
-
+	}
+	instructions = append(instructions, buildPerfSampleStackZeroInstructions()...)
+	instructions = append(instructions,
 		asm.Mov.Imm(asm.R0, perfEventTypeExecResult),
 		asm.StoreMem(asm.RFP, perfSampleStackStart+perfSampleTypeOffset, asm.R0, asm.Byte),
 
@@ -633,7 +647,23 @@ func buildExecResultTraceInstructions(eventsMapFD int, retOffset int16, retSize 
 		asm.FnPerfEventOutput.Call(),
 		asm.Mov.Imm(asm.R0, 0),
 		asm.Return(),
+	)
+	return instructions
+}
+
+func buildPerfSampleStackZeroInstructions() asm.Instructions {
+	// perf_event_output may read the whole sample. Zero all bytes to avoid
+	// verifier rejection due to stack padding that is not explicitly written.
+	// Especially on aarch64, without this zeroing the verifier can reject with:
+	// run collector: load sched_process_exec ebpf program: load program: permission denied: invalid indirect read from stack R4 off -288+1 size 288
+	// The kernel log may append extra omitted lines after this message.
+	instructions := asm.Instructions{
+		asm.Mov.Imm(asm.R0, 0),
 	}
+	for off := perfSampleStackStart; off < 0; off += 8 {
+		instructions = append(instructions, asm.StoreMem(asm.RFP, int16(off), asm.R0, asm.DWord))
+	}
+	return instructions
 }
 
 func parsePerfSample(rawSample []byte) (eventType int, tgid int, tid int, status int64, kernelMonoNS uint64, exeHint string, ok bool) {

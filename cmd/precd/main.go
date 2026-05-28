@@ -16,11 +16,8 @@ import (
 
 // Build metadata fields are injected by linker flags at build time.
 var (
-	version   = "dev"
-	commit    = "none"
-	date      = "unknown"
-	builtBy   = "unknown"
-	treeState = "unknown"
+	version = "dev"
+	commit  = "none"
 )
 
 // daemonCLI holds startup options for precd.

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf/asm"
 	"github.com/jfut/prec/pkg/config"
 	"github.com/jfut/prec/pkg/events"
 	"github.com/jfut/prec/pkg/logger"
@@ -113,6 +114,33 @@ func TestParsePerfSampleExecResultNegative(t *testing.T) {
 	}
 	if status != -2 {
 		t.Fatalf("status=%d want=-2", status)
+	}
+}
+
+func TestBuildPerfSampleStackZeroInstructions(t *testing.T) {
+	t.Parallel()
+
+	got := buildPerfSampleStackZeroInstructions()
+	wantStores := perfSampleSize / 8
+	if len(got) != 1+wantStores {
+		t.Fatalf("instruction count=%d want=%d", len(got), 1+wantStores)
+	}
+
+	for i := 0; i < wantStores; i++ {
+		ins := got[i+1]
+		if ins.OpCode != asm.StoreMemOp(asm.DWord) {
+			t.Fatalf("instruction[%d] opcode=%v want=%v", i+1, ins.OpCode, asm.StoreMemOp(asm.DWord))
+		}
+		if ins.Dst != asm.RFP {
+			t.Fatalf("instruction[%d] dst=%v want=%v", i+1, ins.Dst, asm.RFP)
+		}
+		if ins.Src != asm.R0 {
+			t.Fatalf("instruction[%d] src=%v want=%v", i+1, ins.Src, asm.R0)
+		}
+		wantOffset := int16(perfSampleStackStart + i*8)
+		if ins.Offset != wantOffset {
+			t.Fatalf("instruction[%d] offset=%d want=%d", i+1, ins.Offset, wantOffset)
+		}
 	}
 }
 
