@@ -144,6 +144,8 @@ sudo pacman -U dist/prec-*-x86_64.pkg.tar.zst
 For rpm and deb upgrades (for example with `dnf update` or `apt upgrade`),
 package post-install scripts run `systemctl restart precd.service`
 automatically.
+For rpm and deb uninstall actions, package post-remove scripts run
+`systemctl stop precd.service` automatically.
 
 ### Enable daemon
 
