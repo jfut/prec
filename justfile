@@ -45,7 +45,7 @@ deps:
 #
 
 fmt:
-    gofmt -w ./cmd ./internal
+    gofmt -w ./cmd ./pkg
 
 lint:
     golangci-lint run ./...
