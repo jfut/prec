@@ -83,7 +83,8 @@ Notes:
 
 `source=user` is assigned only when:
 
-- command has an interactive tty (`/dev/pts/*` or `/dev/tty`, or `tty_nr != 0` fallback)
+- command has an interactive tty (`/dev/pts/*` or `/dev/tty`, or `tty_nr != 0` fallback).
+  If child tty data is unavailable, parent tty is used as fallback
 - immediate parent process is a shell
 
 Everything else is `source=system`.

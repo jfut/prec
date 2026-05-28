@@ -55,10 +55,10 @@ func classifyCommandSource(ev CommandEvent, parent *procSnapshot) string {
 }
 
 func isUserShellExecution(ev CommandEvent, parent *procSnapshot) bool {
-	if !hasInteractiveTTY(ev) {
+	if parent == nil {
 		return false
 	}
-	if parent == nil {
+	if !hasInteractiveTTY(ev) && !hasInteractiveTTYSnapshot(*parent) {
 		return false
 	}
 	// Classify as user only when the immediate parent is a shell.
@@ -71,6 +71,13 @@ func hasInteractiveTTY(ev CommandEvent) bool {
 	}
 	// Fallback for environments where /proc/<pid>/fd/0 is not readable.
 	return ev.TTYNr != 0
+}
+
+func hasInteractiveTTYSnapshot(snapshot procSnapshot) bool {
+	if isInteractiveTTY(snapshot.TTY) {
+		return true
+	}
+	return snapshot.TTYNr != 0
 }
 
 func isInteractiveTTY(tty string) bool {

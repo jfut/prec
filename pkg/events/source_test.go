@@ -55,6 +55,17 @@ func TestClassifyCommandSource(t *testing.T) {
 		}
 	})
 
+	t.Run("child tty missing but interactive parent tty is user", func(t *testing.T) {
+		t.Parallel()
+		ev := CommandEvent{}
+		lineage := []procSnapshot{
+			{Comm: "bash", Exe: "/usr/bin/bash", TTY: "/dev/pts/2"},
+		}
+		if got := classifyCommandSourceFromLineage(ev, lineage); got != SourceUser {
+			t.Fatalf("unexpected source: %s", got)
+		}
+	})
+
 	t.Run("non shell parent is system", func(t *testing.T) {
 		t.Parallel()
 		ev := CommandEvent{TTY: "/dev/pts/0"}
