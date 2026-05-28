@@ -66,6 +66,8 @@ const (
 
 const (
 	kernelTimeRefreshInterval = 1024
+	buildFromPIDMaxAttempts   = 3
+	buildFromPIDRetryDelay    = 2 * time.Millisecond
 )
 
 type execAttempt struct {
@@ -399,7 +401,7 @@ func (s *Service) Run(stop <-chan struct{}) error {
 		switch evType {
 		case perfEventTypeExec:
 			eventID := s.nextEventID()
-			ev, err := events.BuildFromPID(tgid, s.cfg.MaxArgs, s.cfg.MaxArgLength, exeHint, timestamp, eventID)
+			ev, err := s.buildStartEventWithRetry(tgid, exeHint, timestamp, eventID)
 			if err != nil {
 				continue
 			}
@@ -452,6 +454,33 @@ func (s *Service) Run(stop <-chan struct{}) error {
 			}
 		}
 	}
+}
+
+func (s *Service) buildStartEventWithRetry(tgid int, exeHint string, timestamp string, eventID string) (events.CommandEvent, error) {
+	return buildFromPIDWithRetry(buildFromPIDMaxAttempts, buildFromPIDRetryDelay, func() (events.CommandEvent, error) {
+		return events.BuildFromPID(tgid, s.cfg.MaxArgs, s.cfg.MaxArgLength, exeHint, timestamp, eventID)
+	})
+}
+
+func buildFromPIDWithRetry(maxAttempts int, retryDelay time.Duration, builder func() (events.CommandEvent, error)) (events.CommandEvent, error) {
+	// Retry /proc snapshot reads because very short-lived processes can disappear
+	// right after sched_process_exec on slower environments such as arm64 hosts.
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		ev, err := builder()
+		if err == nil {
+			return ev, nil
+		}
+		lastErr = err
+		if attempt+1 < maxAttempts && retryDelay > 0 {
+			time.Sleep(retryDelay)
+		}
+	}
+	return events.CommandEvent{}, lastErr
 }
 
 func (s *Service) handleLostSamples(lost uint64) error {

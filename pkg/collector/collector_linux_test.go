@@ -5,6 +5,7 @@ package collector
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -240,6 +241,48 @@ func TestComputeDurationNS(t *testing.T) {
 	overflowEnd := uint64(math.MaxUint64)
 	if got := computeDurationNS(overflowStart, overflowEnd); got != math.MaxInt64 {
 		t.Fatalf("overflow got=%d want=%d", got, int64(math.MaxInt64))
+	}
+}
+
+func TestBuildFromPIDWithRetry(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	got, err := buildFromPIDWithRetry(3, 0, func() (events.CommandEvent, error) {
+		attempts++
+		if attempts < 3 {
+			return events.CommandEvent{}, errors.New("temporary")
+		}
+		return events.CommandEvent{PID: 42}, nil
+	})
+	if err != nil {
+		t.Fatalf("buildFromPIDWithRetry returned error: %v", err)
+	}
+	if got.PID != 42 {
+		t.Fatalf("pid=%d want=42", got.PID)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts=%d want=3", attempts)
+	}
+}
+
+func TestBuildFromPIDWithRetryFailure(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	wantErr := errors.New("still failing")
+	_, err := buildFromPIDWithRetry(2, 0, func() (events.CommandEvent, error) {
+		attempts++
+		return events.CommandEvent{}, wantErr
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts=%d want=2", attempts)
 	}
 }
 
