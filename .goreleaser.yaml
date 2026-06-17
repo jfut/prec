@@ -103,12 +103,13 @@ nfpms:
         type: config|noreplace
         file_info:
           mode: 0640
-      - src: ./packaging/systemd/precd.service
-        dst: /usr/lib/systemd/system/precd.service
-        file_info:
-          mode: 0644
       - src: ./packaging/logrotate/prec
         dst: /etc/logrotate.d/prec
+        type: config|noreplace
+        file_info:
+          mode: 0644
+      - src: ./packaging/systemd/precd.service
+        dst: /usr/lib/systemd/system/precd.service
         file_info:
           mode: 0644
     scripts:
