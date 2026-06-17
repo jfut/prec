@@ -449,12 +449,10 @@ Generated files are stored in `dist/`:
 
 ## Release
 
-1. Edit the `Draft` on the release page.
-2. Update the new version `name` and `tag` on the edit page.
-3. Check `Set as a pre-release` and press the `Publish release` button.
-4. Wait for the build by GitHub Actions to finish.
-    - If the build fails due to errors such as download errors of source files, execute `Re-run failed jobs`.
-5. Once all release files are automatically uploaded, check `Set as the latest release` and press the `Publish release` button.
+1. Run `git tag -s vX.Y.Z -m vX.Y.Z` and wait for the Release to be created.
+2. Edit the created Release.
+3. Press the `Generate release notes` button and edit the release notes.
+4. Press the `Update release` button.
 
 ## License
 
