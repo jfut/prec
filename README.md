@@ -187,8 +187,8 @@ Filter rules:
 
 ### Default behavior
 
-- `prec` without options is equivalent to applying `--query "source=user"`
-- `prec` with `--query` also applies `source=user` unless `--query` contains `source` condition
+- `prec` without options is equivalent to applying `--source user`
+- `prec` with `--query` also applies the selected `--source` filter unless `--source any` is specified
 - Default output fields are `timestamp user group command`
 - `prec` joins `start` and `end` by `event_id` and shows one logical `record_type=command`
 
@@ -213,12 +213,12 @@ Usage: prec [flags]
 Flags:
   -h, --help               Show context-sensitive help.
   -i, --input=STRING       Read log file path (default: /var/log/prec/prec.log)
-  -a, --all-logs           Read current and rotated log files together in list mode and
-                           follow initial output
-  -A, --all-sources        Show both user and system source types. Without source query,
-                           default filter is source=user
-  -q, --query=QUERY,...    Filter expression, repeatable. Clause format: key op value, op is
-                           = != > >= < <= ~= !~=. Use && for AND, || for OR
+  -a, --all-logs           Read current and rotated log files together in list
+                           mode and follow initial output
+  -s, --source="user"      Select source: user,system,any (default: user)
+  -q, --query=QUERY,...    Filter expression, repeatable. Clause format: key op
+                           value, op is = != > >= < <= ~= !~=. Use && for AND,
+                           || for OR
   -f, --fields=STRING      Select output fields, comma-separated.
                            Use + to add and - to remove. Supported:
                            all,timestamp,end_timestamp,event_id,user,group,
@@ -229,9 +229,9 @@ Flags:
                            lost_samples_total,parent_comm,parent_exe,
                            parent_cmdline,parent_tty,parent_tty_nr
       --full-time          Print full RFC3339Nano timestamp
-  -n, --limit=0            Max rows in list mode; initial rows before follow in --follow
-                           mode (0 means unlimited in list mode and no initial rows in
-                           --follow mode)
+  -n, --limit=0            Max rows in list mode; initial rows before follow in
+                           --follow mode (0 means unlimited in list mode and no
+                           initial rows in --follow mode)
   -F, --follow             Follow command events
       --tree               Print command lineage as a tree
   -o, --output=STRING      Output format: text,json,csv (default: text)
@@ -256,7 +256,8 @@ Follow mode semantics:
 - `-i`, `--input`: read from specified log path instead of config `log_path`
 - `-a`, `--all-logs`: include rotated logs in list mode and follow initial backfill
   - gzip and zstd layers are detected from file content and unwrapped recursively, so gzip-compressed rotated zstd logs are included
-- `-A`, `--all-sources`: disable implicit `source=user` default filter
+- `-s`, `--source`: select source (`user`, `system`, `any`)
+  - use `any` when `--query` contains custom `source` logic
 - `-q`, `--query`: filter expression, repeatable
 - `-f`, `--fields`: output fields selection
 - `--full-time`: keep RFC3339Nano timestamp text
@@ -299,7 +300,7 @@ Rules:
 - `||` is OR operator
 - AND has higher precedence than OR
 - repeated `--query` is AND at top level
-- `source` value must be `user` or `system`
+- `source` value in `--query` must be `user` or `system`
 - in `prec` merged output, `record_type` is effectively `command`, `fail`, or `loss`
 - query parser also accepts `start` and `end` as raw log record types
 - string match is case-sensitive
@@ -347,8 +348,8 @@ Examples:
 - `-f timestamp,uid,gid,group,command`
 - `-f +uid,gid,group,-timestamp,user`
 - `-f all,-end_timestamp,event_id,duration_ns,duration,cgroup,tty,tty_nr,source,parent_comm,parent_exe,parent_cmdline,parent_tty,parent_tty_nr`
-- `prec -A --query "record_type=loss" -f timestamp,record_type,lost_samples,lost_samples_total`
-- `prec -A --query "record_type=fail" -f timestamp,auid,session_id,exe,exec_errno,exec_error`
+- `prec -s any --query "record_type=loss" -f timestamp,record_type,lost_samples,lost_samples_total`
+- `prec -s any --query "record_type=fail" -f timestamp,auid,session_id,exe,exec_errno,exec_error`
 
 ## Quick examples
 
@@ -385,7 +386,7 @@ prec -q "uid>=1000&&uid!=1999"
 Include all sources and show commands run by `user1` or `root`.
 
 ```bash
-prec -A -q "user=user1||user=root"
+prec -s any -q "user=user1||user=root"
 ```
 
 Show `curl` executions after a specific time and add duration and exit status.
@@ -406,16 +407,22 @@ Print selected fields with full RFC3339Nano timestamps.
 prec -f timestamp,uid,gid,command --full-time
 ```
 
-Disable the default `source=user` filter and show both `user` and `system` events.
+Show both `user` and `system` events.
 
 ```bash
-prec -A
+prec -s any
+```
+
+Show only `system` events.
+
+```bash
+prec -s system
 ```
 
 Monitor commands executed by common web server accounts, which helps detect command execution caused by OS command injection attacks and possible web shell activity.
 
 ```bash
-prec -A -q "uid=48 || uid=976 || user=apache || user=nginx"
+prec -s any -q "uid=48 || uid=976 || user=apache || user=nginx"
 ```
 
 ## Development

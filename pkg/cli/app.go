@@ -26,17 +26,17 @@ type outputOptions struct {
 
 // rootCLI centralizes flag definitions for prec.
 type rootCLI struct {
-	Input      string   `name:"input" short:"i" help:"Read log file path (default: /var/log/prec/prec.log)"`
-	AllLogs    bool     `name:"all-logs" short:"a" help:"Read current and rotated log files together in list mode and follow initial output"`
-	AllSources bool     `name:"all-sources" short:"A" help:"Show both user and system source types. Without source query, default filter is source=user"`
-	Query      []string `name:"query" short:"q" help:"Filter expression, repeatable. Clause format: key op value, op is = != > >= < <= ~= !~=. Use && for AND, || for OR"`
-	Fields     string   `name:"fields" short:"f" help:"Select output fields, comma-separated. Use + to add and - to remove. Supported:\nall,timestamp,end_timestamp,event_id,user,group,\ncommand,uid,gid,auid,session_id,pid,ppid,comm,\nexe,cwd,argv,argc,cgroup,tty,tty_nr,source,\nrecord_type,exit_status,duration_ns,duration,\nexec_errno,exec_error,lost_samples,\nlost_samples_total,parent_comm,parent_exe,\nparent_cmdline,parent_tty,parent_tty_nr"`
-	FullTime   bool     `name:"full-time" help:"Print full RFC3339Nano timestamp"`
-	Limit      int      `name:"limit" short:"n" help:"Max rows in list mode; initial rows before follow in --follow mode (0 means unlimited in list mode and no initial rows in --follow mode)" default:"0"`
-	Follow     bool     `name:"follow" short:"F" help:"Follow command events"`
-	Tree       bool     `name:"tree" help:"Print command lineage as a tree"`
-	Output     string   `name:"output" short:"o" help:"Output format: text,json,csv (default: text)"`
-	Version    bool     `name:"version" help:"Show version and build info"`
+	Input    string   `name:"input" short:"i" help:"Read log file path (default: /var/log/prec/prec.log)"`
+	AllLogs  bool     `name:"all-logs" short:"a" help:"Read current and rotated log files together in list mode and follow initial output"`
+	Source   string   `name:"source" short:"s" help:"Select source: user,system,any (default: user)" default:"user"`
+	Query    []string `name:"query" short:"q" help:"Filter expression, repeatable. Clause format: key op value, op is = != > >= < <= ~= !~=. Use && for AND, || for OR"`
+	Fields   string   `name:"fields" short:"f" help:"Select output fields, comma-separated. Use + to add and - to remove. Supported:\nall,timestamp,end_timestamp,event_id,user,group,\ncommand,uid,gid,auid,session_id,pid,ppid,comm,\nexe,cwd,argv,argc,cgroup,tty,tty_nr,source,\nrecord_type,exit_status,duration_ns,duration,\nexec_errno,exec_error,lost_samples,\nlost_samples_total,parent_comm,parent_exe,\nparent_cmdline,parent_tty,parent_tty_nr"`
+	FullTime bool     `name:"full-time" help:"Print full RFC3339Nano timestamp"`
+	Limit    int      `name:"limit" short:"n" help:"Max rows in list mode; initial rows before follow in --follow mode (0 means unlimited in list mode and no initial rows in --follow mode)" default:"0"`
+	Follow   bool     `name:"follow" short:"F" help:"Follow command events"`
+	Tree     bool     `name:"tree" help:"Print command lineage as a tree"`
+	Output   string   `name:"output" short:"o" help:"Output format: text,json,csv (default: text)"`
+	Version  bool     `name:"version" help:"Show version and build info"`
 }
 
 func Run(args []string, version string) int {
@@ -132,25 +132,24 @@ func resolveInputLogPath(configPath string, inputPath string) (string, error) {
 
 func effectiveQuerySpecs(cli rootCLI) []string {
 	specs := append([]string(nil), cli.Query...)
-	if cli.AllSources || hasSourceQuery(specs) {
+	switch normalizeSource(cli.Source) {
+	case "any":
 		return specs
+	case "system":
+		// Source selection is prepended so non-matching events are rejected early.
+		return append([]string{"source=system"}, specs...)
+	default:
+		// Source selection is prepended so non-matching events are rejected early.
+		return append([]string{"source=user"}, specs...)
 	}
-	// Keep source=user as the first predicate so non-user events can be rejected early.
-	return append([]string{"source=user"}, specs...)
-}
-
-func hasSourceQuery(specs []string) bool {
-	for _, spec := range specs {
-		if query.SpecHasKey(spec, "source") {
-			return true
-		}
-	}
-	return false
 }
 
 func validateModeFlags(cli rootCLI) error {
 	if !isSupportedOutputFormat(normalizeOutputFormat(cli.Output)) {
 		return fmt.Errorf("invalid --output value: %s", cli.Output)
+	}
+	if !isSupportedSource(normalizeSource(cli.Source)) {
+		return fmt.Errorf("invalid --source value: %s", cli.Source)
 	}
 	if cli.Follow && cli.Tree {
 		return errors.New("--tree cannot be used with --follow (-F)")
@@ -173,6 +172,22 @@ func isSupportedOutputFormat(v string) bool {
 func normalizeOutputFormat(v string) string {
 	if strings.TrimSpace(v) == "" {
 		return outputFormatText
+	}
+	return v
+}
+
+func isSupportedSource(v string) bool {
+	switch v {
+	case "user", "system", "any":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeSource(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "user"
 	}
 	return v
 }
