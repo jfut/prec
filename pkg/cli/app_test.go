@@ -29,6 +29,11 @@ func TestValidateModeFlags(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "invalid source",
+			cli:     rootCLI{Source: "kernel", Limit: 0},
+			wantErr: true,
+		},
+		{
 			name:    "query and json output is valid",
 			cli:     rootCLI{Query: []string{"uid>=1000"}, Output: outputFormatJSON, Limit: 0},
 			wantErr: false,
@@ -125,9 +130,14 @@ func TestEffectiveQuerySpecs(t *testing.T) {
 			want: []string{"source=user"},
 		},
 		{
-			name: "all disables default source filter",
-			cli:  rootCLI{AllSources: true},
+			name: "source any disables default source filter",
+			cli:  rootCLI{Source: "any"},
 			want: nil,
+		},
+		{
+			name: "source system applies system source filter",
+			cli:  rootCLI{Source: "system"},
+			want: []string{"source=system"},
 		},
 		{
 			name: "implicit source user is added when query has no source",
@@ -135,24 +145,24 @@ func TestEffectiveQuerySpecs(t *testing.T) {
 			want: []string{"source=user", "uid>=1000"},
 		},
 		{
-			name: "all keeps explicit query unchanged",
-			cli:  rootCLI{AllSources: true, Query: []string{"source=system"}},
+			name: "source any keeps explicit query unchanged",
+			cli:  rootCLI{Source: "any", Query: []string{"source=system"}},
 			want: []string{"source=system"},
 		},
 		{
-			name: "explicit source query keeps query unchanged",
+			name: "default source user is added before explicit source query",
 			cli:  rootCLI{Query: []string{"uid>=1000", "source=system"}},
-			want: []string{"uid>=1000", "source=system"},
+			want: []string{"source=user", "uid>=1000", "source=system"},
 		},
 		{
-			name: "source query in and clause keeps query unchanged",
+			name: "source query in and clause still gets default source user",
 			cli:  rootCLI{Query: []string{"uid>=1000&&source=user"}},
-			want: []string{"uid>=1000&&source=user"},
+			want: []string{"source=user", "uid>=1000&&source=user"},
 		},
 		{
-			name: "source query in or expression keeps query unchanged",
+			name: "source query in or expression still gets default source user",
 			cli:  rootCLI{Query: []string{"uid>=1000||source=system"}},
-			want: []string{"uid>=1000||source=system"},
+			want: []string{"source=user", "uid>=1000||source=system"},
 		},
 	}
 
@@ -265,62 +275,4 @@ func TestResolveInputLogPath(t *testing.T) {
 			t.Fatalf("got=%q want=%q", got, config.DefaultLogPath)
 		}
 	})
-}
-
-func TestHasSourceQuery(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		specs []string
-		want  bool
-	}{
-		{
-			name:  "no query",
-			specs: nil,
-			want:  false,
-		},
-		{
-			name:  "query without source",
-			specs: []string{"uid>=1000", "user=alice"},
-			want:  false,
-		},
-		{
-			name:  "direct source query",
-			specs: []string{"source=system"},
-			want:  true,
-		},
-		{
-			name:  "source query in and clause",
-			specs: []string{"uid>=1000&& source!=system"},
-			want:  true,
-		},
-		{
-			name:  "source like query",
-			specs: []string{"source~=user"},
-			want:  true,
-		},
-		{
-			name:  "source query in or expression",
-			specs: []string{"uid>=1000||source=system"},
-			want:  true,
-		},
-		{
-			name:  "source query in and operator expression",
-			specs: []string{"uid>=1000&&source=user"},
-			want:  true,
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := hasSourceQuery(tt.specs)
-			if got != tt.want {
-				t.Fatalf("got=%v want=%v", got, tt.want)
-			}
-		})
-	}
 }
