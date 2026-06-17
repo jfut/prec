@@ -147,6 +147,31 @@ func writeTestLogFile(path string, eventsIn []events.CommandEvent, compression s
 	return fmt.Errorf("unsupported compression mode: %s", compression)
 }
 
+func writeTestLayeredLogFile(path string, eventsIn []events.CommandEvent, layers ...string) error {
+	var payload bytes.Buffer
+	for _, ev := range eventsIn {
+		b, err := json.Marshal(ev)
+		if err != nil {
+			return err
+		}
+		if _, err := payload.Write(append(b, '\n')); err != nil {
+			return err
+		}
+	}
+
+	encoded := payload.Bytes()
+	for _, layer := range layers {
+		next, err := encodeCompressedFrame(layer, string(encoded))
+		if err != nil {
+			return err
+		}
+		encoded = next
+	}
+
+	// Build a layered rotated log that matches precd compression plus logrotate compress.
+	return os.WriteFile(path, encoded, 0o644)
+}
+
 func writeTestZstdFrameLogFile(path string, eventsIn []events.CommandEvent) error {
 	f, err := os.Create(path)
 	if err != nil {

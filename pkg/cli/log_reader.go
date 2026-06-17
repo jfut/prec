@@ -12,33 +12,15 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+const maxLogCompressionLayers = 4
+
 func openLogReader(logPath string) (io.ReadCloser, error) {
 	f, err := os.Open(logPath)
 	if err != nil {
 		return nil, err
 	}
 
-	modeBySuffix := detectCompressionBySuffix(logPath)
-	if modeBySuffix == logCompressionGzip {
-		return openGzipLogReader(f, f)
-	}
-	if modeBySuffix == logCompressionZstd {
-		return openZstdLogReader(f, f)
-	}
-
-	bufReader := bufio.NewReader(f)
-	modeByMagic := detectCompressionByMagic(bufReader)
-	if modeByMagic == logCompressionGzip {
-		return openGzipLogReader(f, bufReader)
-	}
-	if modeByMagic == logCompressionZstd {
-		return openZstdLogReader(f, bufReader)
-	}
-
-	return &readerWithCloser{
-		reader: bufReader,
-		closer: f,
-	}, nil
+	return openLayeredLogReader(logPath, f)
 }
 
 func detectLogCompression(logPath string, hint string) (string, error) {
@@ -87,63 +69,6 @@ func detectCompressionByMagic(r *bufio.Reader) string {
 		return logCompressionZstd
 	}
 	return logCompressionNone
-}
-
-func openGzipLogReader(base io.Closer, src io.Reader) (io.ReadCloser, error) {
-	// Transparently decompress .gz rotated logs so they are included in list mode.
-	gzReader, err := gzip.NewReader(src)
-	if err != nil {
-		base.Close()
-		return nil, err
-	}
-	return &gzipLogReadCloser{
-		base: base,
-		gz:   gzReader,
-	}, nil
-}
-
-func openZstdLogReader(base io.Closer, src io.Reader) (io.ReadCloser, error) {
-	dec, err := zstd.NewReader(src)
-	if err != nil {
-		base.Close()
-		return nil, err
-	}
-	return &zstdLogReadCloser{
-		base: base,
-		dec:  dec,
-	}, nil
-}
-
-type gzipLogReadCloser struct {
-	base io.Closer
-	gz   *gzip.Reader
-}
-
-func (r *gzipLogReadCloser) Read(p []byte) (int, error) {
-	return r.gz.Read(p)
-}
-
-func (r *gzipLogReadCloser) Close() error {
-	gzErr := r.gz.Close()
-	baseErr := r.base.Close()
-	if gzErr != nil {
-		return gzErr
-	}
-	return baseErr
-}
-
-type zstdLogReadCloser struct {
-	base io.Closer
-	dec  *zstd.Decoder
-}
-
-func (r *zstdLogReadCloser) Read(p []byte) (int, error) {
-	return r.dec.Read(p)
-}
-
-func (r *zstdLogReadCloser) Close() error {
-	r.dec.Close()
-	return r.base.Close()
 }
 
 type compressedTailReader struct {
@@ -275,4 +200,84 @@ func (r *readerWithCloser) Read(p []byte) (int, error) {
 
 func (r *readerWithCloser) Close() error {
 	return r.closer.Close()
+}
+
+func openLayeredLogReader(logPath string, base io.ReadCloser) (io.ReadCloser, error) {
+	var reader io.Reader = base
+	closers := []io.Closer{base}
+
+	for depth := range maxLogCompressionLayers {
+		bufReader := bufio.NewReader(reader)
+		mode := detectCompressionByMagic(bufReader)
+		if mode == logCompressionNone && depth == 0 {
+			mode = detectCompressionBySuffix(logPath)
+		}
+		if mode == logCompressionNone {
+			return &readerWithCloser{
+				reader: bufReader,
+				closer: &stackedCloser{
+					closers: closers,
+				},
+			}, nil
+		}
+
+		nextReader, nextCloser, err := openCompressedLogLayer(mode, bufReader)
+		if err != nil {
+			closeAll(closers)
+			return nil, err
+		}
+		closers = append(closers, nextCloser)
+		reader = nextReader
+	}
+
+	closeAll(closers)
+	return nil, fmt.Errorf("too many compression layers in log file: %s", logPath)
+}
+
+func openCompressedLogLayer(mode string, src io.Reader) (io.Reader, io.Closer, error) {
+	switch mode {
+	case logCompressionGzip:
+		// Unwrap logrotate gzip output so downstream code reads the original JSONL stream.
+		gzReader, err := gzip.NewReader(src)
+		if err != nil {
+			return nil, nil, err
+		}
+		return gzReader, gzReader, nil
+	case logCompressionZstd:
+		// Unwrap zstd frames written by precd and pass JSONL to event decoding.
+		dec, err := zstd.NewReader(src)
+		if err != nil {
+			return nil, nil, err
+		}
+		return dec, zstdDecoderCloser{dec: dec}, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported compression mode: %s", mode)
+	}
+}
+
+type stackedCloser struct {
+	closers []io.Closer
+}
+
+func (c *stackedCloser) Close() error {
+	return closeAll(c.closers)
+}
+
+type zstdDecoderCloser struct {
+	dec *zstd.Decoder
+}
+
+func (c zstdDecoderCloser) Close() error {
+	c.dec.Close()
+	return nil
+}
+
+func closeAll(closers []io.Closer) error {
+	var firstErr error
+	for i := len(closers) - 1; i >= 0; i-- {
+		if err := closers[i].Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

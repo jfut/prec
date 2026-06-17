@@ -36,6 +36,31 @@ func TestOpenLogReaderDetectsCompressionByMagic(t *testing.T) {
 	}
 }
 
+func TestOpenLogReaderUnwrapsLayeredCompression(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "prec.log-20260615.gz")
+	evs := []events.CommandEvent{
+		{Timestamp: "2026-06-15T04:00:00Z", PID: 55, User: "u", Group: "g", Source: events.SourceUser, Argv: []string{"cmd55"}},
+	}
+	if err := writeTestLayeredLogFile(path, evs, logCompressionZstd, logCompressionGzip); err != nil {
+		t.Fatalf("write layered log: %v", err)
+	}
+
+	lf, err := buildQueryFilter([]string{"source=user"})
+	if err != nil {
+		t.Fatalf("buildQueryFilter: %v", err)
+	}
+	got, err := collectFilteredEvents([]string{path}, 0, lf)
+	if err != nil {
+		t.Fatalf("collectFilteredEvents: %v", err)
+	}
+	if len(got) != 1 || got[0].PID != 55 {
+		t.Fatalf("unexpected events: %+v", got)
+	}
+}
+
 func TestIsReplacedByName(t *testing.T) {
 	t.Parallel()
 
