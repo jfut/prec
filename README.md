@@ -255,6 +255,7 @@ Follow mode semantics:
 
 - `-i`, `--input`: read from specified log path instead of config `log_path`
 - `-a`, `--all-logs`: include rotated logs in list mode and follow initial backfill
+  - gzip and zstd layers are detected from file content and unwrapped recursively, so gzip-compressed rotated zstd logs are included
 - `-A`, `--all-sources`: disable implicit `source=user` default filter
 - `-q`, `--query`: filter expression, repeatable
 - `-f`, `--fields`: output fields selection
