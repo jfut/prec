@@ -1,6 +1,10 @@
 /var/log/prec/prec.log {
     # daily
     # rotate 90
+    # Log compression is enabled by default (compress = "zstd" in precd.conf),
+    # so compressed rotated log files cannot be read with --all-logs.
+    # If compress = "no" is set in precd.conf, using compress here is recommended.
+    nocompress
     missingok
     notifempty
     sharedscripts
