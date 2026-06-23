@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the prec project.
+
 set -eu
 
 # Create runtime directories required by precd at install time.
