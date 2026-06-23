@@ -83,10 +83,11 @@ nfpms:
       - prec
       - precd
     description: |-
-      prec command execution logger (includes prec and precd)
+      prec is a Linux command execution observability tool
     maintainer: Jun Futagawa <jfut@integ.jp>
     license: Apache-2.0
     vendor: prec project
+    homepage: https://github.com/jfut/prec
     bindir: /usr/bin
     section: utils
     formats:
@@ -95,6 +96,9 @@ nfpms:
       - rpm
       - termux.deb
       - archlinux
+    rpm:
+      signature:
+        key_file: '{{ with index .Env "GPG_KEY_PATH" }}{{ . }}{{ end }}'
     contents:
       - src: /usr/bin/precd
         dst: /usr/sbin/precd
