@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the prec project.
+
 set -eu
 
 # Refresh systemd unit cache after package removal.

@@ -457,3 +457,9 @@ Generated files are stored in `dist/`:
 ## License
 
 Apache-2.0
+
+Copyright contributors to the prec project.
+
+## Author
+
+Jun Futagawa (jfut)
