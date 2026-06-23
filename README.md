@@ -449,10 +449,13 @@ Generated files are stored in `dist/`:
 
 ## Release
 
-1. Run `git tag -s vX.Y.Z -m vX.Y.Z` and wait for the Release to be created.
-2. Edit the created Release.
-3. Press the `Generate release notes` button and edit the release notes.
-4. Press the `Update release` button.
+GitHub Actions signs RPM artifacts with the GPG private key stored in `RPM_SIGNING_KEY`. If the key has a passphrase, store it in `NFPM_PASSPHRASE`.
+
+1. Run `git tag -s vX.Y.Z -m vX.Y.Z`.
+2. Run `git push origin vX.Y.Z` and wait for the Release to be created.
+3. Edit the created Release.
+4. Press the `Generate release notes` button and edit the release notes.
+5. Press the `Update release` button.
 
 ## License
 
