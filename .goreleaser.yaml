@@ -93,6 +93,7 @@ nfpms:
       - apk
       - deb
       - rpm
+      - termux.deb
       - archlinux
     contents:
       - src: /usr/bin/precd
