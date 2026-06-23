@@ -162,6 +162,11 @@ Default config path: `/etc/prec/precd.conf`
 
 See: [packaging/precd.conf.example](packaging/precd.conf.example)
 
+Single-instance behavior:
+
+- `precd` acquires an exclusive `flock` on `<log_path>.lock` at startup
+- if the lock is already held, startup fails immediately to prevent duplicate collection
+
 Compression modes:
 
 - `compress = "no"` plain JSONL

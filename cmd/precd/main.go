@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -61,6 +62,15 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+
+	lock, err := acquireSingletonLock(cfg.LogPath)
+	if err != nil {
+		if errors.Is(err, errPrecdAlreadyRunning) {
+			log.Fatalf("another precd instance is already running: %v", err)
+		}
+		log.Fatalf("init singleton lock: %v", err)
+	}
+	defer lock.Close()
 
 	w, err := logger.NewJSONLWriter(cfg.LogPath, cfg.Compress, cfg.CompressLevel)
 	if err != nil {
