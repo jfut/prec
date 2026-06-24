@@ -91,69 +91,91 @@ Everything else is `source=system`.
 
 ## Installation
 
-`precd` must run as root.
+Install a release package from [Releases](https://github.com/jfut/prec/releases), or use the RPM repository setup below on RHEL-compatible distributions.
 
-### Manual build and manual install (from source)
+Run package installation, manual system installation, and service management commands as root.
 
-Build:
+For rpm and deb upgrades (for example with `dnf update` or `apt upgrade`), package post-install scripts run `systemctl restart precd.service` automatically.
+For rpm and deb uninstall actions, package post-remove scripts run `systemctl stop precd.service` automatically.
 
-```bash
-just build
-sudo install -m 0755 dist/prec /usr/bin/prec
-sudo install -m 0755 dist/precd /usr/sbin/precd
-```
+### RPM releases with dnf-plugin-anyrepo
 
-Install config and service files manually:
+Install [dnf-plugin-anyrepo](https://github.com/jfut/dnf-plugin-anyrepo), import the RPM GPG key, add this repository, then install the package with `dnf`.
 
 ```bash
-sudo mkdir -p /etc/prec
-sudo chmod 750 /etc/prec
-sudo install -m 0640 packaging/precd.conf.example /etc/prec/precd.conf
-
-sudo mkdir -p /var/log/prec
-sudo chmod 0750 /var/log/prec
-
-sudo install -m 0640 packaging/systemd/precd.service /usr/lib/systemd/system/
-sudo install -m 0640 packaging/logrotate/prec /etc/logrotate.d/prec
+rpm --import https://raw.githubusercontent.com/jfut/prec/refs/heads/main/packaging/RPM-GPG-KEY-jfut-github
+dnf-anyrepo add https://github.com/jfut/prec
+dnf install prec
 ```
 
-### Package-based install
+Upgrade the installed package with `dnf`.
+
+```bash
+dnf upgrade prec
+```
+
+### Downloaded or locally built packages
+
+Use one release package downloaded from [Releases](https://github.com/jfut/prec/releases), or build local package files first:
 
 ```bash
 just release
 ```
 
-Install one package from `dist/` with your package manager:
+Install one package with your package manager. For downloaded release packages, replace the `dist/...` path with the downloaded file path.
 
 Use the matching architecture package name (for example, `arm64` or `aarch64` on ARM64 hosts).
 
 ```bash
 # Debian/Ubuntu
-sudo dpkg -i dist/prec_*_amd64.deb
+dpkg -i dist/prec_*_amd64.deb
 
 # RHEL/Fedora
-sudo rpm -Uvh dist/prec-*.x86_64.rpm
+rpm -Uvh dist/prec-*.x86_64.rpm
 
 # Alpine
-sudo apk add --allow-untrusted dist/prec_*_x86_64.apk
+apk add --allow-untrusted dist/prec_*_x86_64.apk
 
 # Arch Linux
-sudo pacman -U dist/prec-*-x86_64.pkg.tar.zst
+pacman -U dist/prec-*-x86_64.pkg.tar.zst
 ```
 
-For rpm and deb upgrades (for example with `dnf update` or `apt upgrade`),
-package post-install scripts run `systemctl restart precd.service`
-automatically.
-For rpm and deb uninstall actions, package post-remove scripts run
-`systemctl stop precd.service` automatically.
+### Manual install from source
 
-### Enable daemon
+Build the binaries first:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable precd.service
-sudo systemctl start precd.service
-sudo systemctl status precd.service
+just build
+```
+
+Install the binaries:
+
+```bash
+install -m 0755 dist/prec /usr/bin/prec
+install -m 0755 dist/precd /usr/sbin/precd
+```
+
+Install config and service files manually:
+
+```bash
+mkdir -p /etc/prec
+chmod 750 /etc/prec
+install -m 0640 packaging/precd.conf.example /etc/prec/precd.conf
+
+mkdir -p /var/log/prec
+chmod 0750 /var/log/prec
+
+install -m 0640 packaging/systemd/precd.service /usr/lib/systemd/system/
+install -m 0640 packaging/logrotate/prec /etc/logrotate.d/prec
+```
+
+### Enable and start precd
+
+```bash
+systemctl daemon-reload
+systemctl enable precd.service
+systemctl start precd.service
+systemctl status precd.service
 ```
 
 ## Configuration
