@@ -16,9 +16,9 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf/asm"
-	"github.com/jfut/prec/pkg/config"
-	"github.com/jfut/prec/pkg/events"
-	"github.com/jfut/prec/pkg/logger"
+	"github.com/jfut/prec/internal/config"
+	"github.com/jfut/prec/internal/events"
+	"github.com/jfut/prec/internal/logger"
 )
 
 func TestParseOffsetFromFormat(t *testing.T) {

@@ -6,7 +6,7 @@ package cli
 import (
 	"testing"
 
-	"github.com/jfut/prec/pkg/events"
+	"github.com/jfut/prec/internal/events"
 )
 
 func TestMergeEventsForListJoinsStartEnd(t *testing.T) {

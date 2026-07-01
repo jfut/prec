@@ -16,8 +16,8 @@ import (
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/jfut/prec/pkg/config"
-	"github.com/jfut/prec/pkg/events"
+	"github.com/jfut/prec/internal/config"
+	"github.com/jfut/prec/internal/events"
 )
 
 // JSONLWriter appends events line by line to a root-owned log file.

@@ -15,7 +15,7 @@ import (
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/jfut/prec/pkg/events"
+	"github.com/jfut/prec/internal/events"
 )
 
 func collectFilteredEvents(logPaths []string, limit int, lf listFilter) ([]events.CommandEvent, error) {

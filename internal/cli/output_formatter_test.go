@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jfut/prec/pkg/events"
+	"github.com/jfut/prec/internal/events"
 )
 
 func TestFormatEventSimple(t *testing.T) {

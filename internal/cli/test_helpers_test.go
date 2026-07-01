@@ -15,7 +15,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/jfut/prec/pkg/events"
+	"github.com/jfut/prec/internal/events"
 )
 
 func intPtr(v int) *int {

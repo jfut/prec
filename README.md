@@ -5,6 +5,10 @@
 
 `prec` is a Linux command execution observability tool where `precd` uses eBPF to continuously collect process execution events as JSON Lines and `prec` lets you quickly search and inspect those records from the CLI.
 
+Implementation note:
+
+- Go packages under `internal/` are private implementation details and are not a supported public import API
+
 ## Why use it
 
 - Does not rely on shell history or `LD_PRELOAD`

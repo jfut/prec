@@ -4,8 +4,8 @@
 package cli
 
 import (
-	"github.com/jfut/prec/pkg/events"
-	"github.com/jfut/prec/pkg/query"
+	"github.com/jfut/prec/internal/events"
+	"github.com/jfut/prec/internal/query"
 )
 
 func buildQueryFilter(specs []string) (listFilter, error) {

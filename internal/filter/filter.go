@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jfut/prec/pkg/config"
-	"github.com/jfut/prec/pkg/events"
-	"github.com/jfut/prec/pkg/query"
+	"github.com/jfut/prec/internal/config"
+	"github.com/jfut/prec/internal/events"
+	"github.com/jfut/prec/internal/query"
 )
 
 type compiledRule struct {

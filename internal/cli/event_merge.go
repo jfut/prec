@@ -3,7 +3,7 @@
 
 package cli
 
-import "github.com/jfut/prec/pkg/events"
+import "github.com/jfut/prec/internal/events"
 
 type commandJoinState struct {
 	pending map[string]events.CommandEvent

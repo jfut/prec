@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jfut/prec/pkg/events"
+	"github.com/jfut/prec/internal/events"
 )
 
 func TestBuildQueryFilterValid(t *testing.T) {

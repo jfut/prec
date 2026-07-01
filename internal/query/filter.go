@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jfut/prec/pkg/events"
+	"github.com/jfut/prec/internal/events"
 )
 
 var operators = []string{"!~=", ">=", "<=", "!=", "~=", ">", "<", "="}

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfut/prec/pkg/events"
+	"github.com/jfut/prec/internal/events"
 )
 
 func runList(logPaths []string, limit int, lf listFilter, opt outputOptions) int {

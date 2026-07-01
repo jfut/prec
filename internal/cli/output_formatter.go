@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jfut/prec/pkg/events"
+	"github.com/jfut/prec/internal/events"
 )
 
 // outputFormatter hides per-format encoding details from list/follow flows.
