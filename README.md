@@ -1,6 +1,6 @@
 # prec
 
-![Tag](https://img.shields.io/github/tag/jfut/prec.svg)
+[![Tag](https://img.shields.io/github/tag/jfut/prec.svg)](https://github.com/jfut/dnf-plugin-anyrepo/releases)
 [![License](https://img.shields.io/badge/license-Apache%202-blue)](https://github.com/jfut/prec/blob/main/LICENSE)
 
 `prec` is a Linux command execution observability tool where `precd` uses eBPF to continuously collect process execution events as JSON Lines and `prec` lets you quickly search and inspect those records from the CLI.
