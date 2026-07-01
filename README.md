@@ -144,6 +144,9 @@ apk add --allow-untrusted dist/prec_*_x86_64.apk
 pacman -U dist/prec-*-x86_64.pkg.tar.zst
 ```
 
+Package installs place `/etc/logrotate.d/prec` with a default policy of `daily` and `rotate 7305` (about 20 years of retention).
+Adjust the `rotate` value as needed to match your retention policy.
+
 ### Manual install from source
 
 Build the binaries first:
@@ -172,6 +175,9 @@ chmod 0750 /var/log/prec
 install -m 0640 packaging/systemd/precd.service /usr/lib/systemd/system/
 install -m 0640 packaging/logrotate/prec /etc/logrotate.d/prec
 ```
+
+The installed `/etc/logrotate.d/prec` default is `daily` with `rotate 7305` (about 20 years of retention).
+Adjust the `rotate` value as needed to match your retention policy.
 
 ### Enable and start precd
 

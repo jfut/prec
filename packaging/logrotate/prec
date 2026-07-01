@@ -1,6 +1,8 @@
 /var/log/prec/prec.log {
-    # daily
-    # rotate 90
+    daily
+    # Retain logs for up to 20 years by default.
+    # Adjust this value to match your organization's retention policy.
+    rotate 7305
     # Log compression is enabled by default (compress = "zstd" in precd.conf),
     # so compressed rotated log files cannot be read with --all-logs.
     # If compress = "no" is set in precd.conf, using compress here is recommended.
