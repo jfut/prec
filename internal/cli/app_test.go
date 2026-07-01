@@ -15,7 +15,7 @@ import (
 
 	"github.com/alecthomas/kong"
 
-	"github.com/jfut/prec/pkg/config"
+	"github.com/jfut/prec/internal/config"
 )
 
 func TestValidateModeFlags(t *testing.T) {

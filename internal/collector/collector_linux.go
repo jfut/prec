@@ -24,10 +24,10 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 
-	"github.com/jfut/prec/pkg/config"
-	"github.com/jfut/prec/pkg/events"
-	"github.com/jfut/prec/pkg/filter"
-	"github.com/jfut/prec/pkg/logger"
+	"github.com/jfut/prec/internal/config"
+	"github.com/jfut/prec/internal/events"
+	"github.com/jfut/prec/internal/filter"
+	"github.com/jfut/prec/internal/logger"
 )
 
 const (

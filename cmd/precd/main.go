@@ -13,9 +13,9 @@ import (
 
 	"github.com/alecthomas/kong"
 
-	"github.com/jfut/prec/pkg/collector"
-	"github.com/jfut/prec/pkg/config"
-	"github.com/jfut/prec/pkg/logger"
+	"github.com/jfut/prec/internal/collector"
+	"github.com/jfut/prec/internal/config"
+	"github.com/jfut/prec/internal/logger"
 )
 
 // Build metadata fields are injected by linker flags at build time.

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jfut/prec/pkg/cli"
+	"github.com/jfut/prec/internal/cli"
 )
 
 // Build metadata fields are injected by linker flags at build time.
