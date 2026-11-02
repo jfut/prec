@@ -12,6 +12,7 @@ Repository operation rules for implementation and changes.
 
 - This file keeps only delta rules that are not fully described in README.
 - If AGENTS.md and README.md conflict, README.md is the source of truth unless this file explicitly marks an override.
+- When documentation and existing code disagree, follow the existing code's style and list every discrepancy found in the final response.
 
 ## Explicit overrides
 

@@ -51,6 +51,12 @@ type CommandEvent struct {
 	ParentCmdline string   `json:"parent_cmdline,omitempty"`
 	ParentTTY     string   `json:"parent_tty,omitempty"`
 	ParentTTYNr   int64    `json:"parent_tty_nr,omitempty"`
+	FilePath      string   `json:"file_path,omitempty"`
+	FileFD        *int     `json:"file_fd,omitempty"`
+	FileBytes     *int64   `json:"file_bytes,omitempty"`
+	FileFlags     *int     `json:"file_flags,omitempty"`
+	FileDev       *uint64  `json:"file_dev,omitempty"`
+	FileIno       *uint64  `json:"file_ino,omitempty"`
 }
 
 type statusInfo struct {
@@ -154,6 +160,31 @@ func BuildCommandEndEvent(start CommandEvent, endTimestamp string, durationNS in
 		status := *exitStatus
 		ev.ExitStatus = &status
 	}
+	return ev
+}
+
+func BuildFileOpenEvent(base CommandEvent, filePath string, fileFD int, fileFlags int) CommandEvent {
+	ev := base
+	ev.RecordType = RecordTypeFileOpen
+	ev.FilePath = strings.TrimSpace(filePath)
+	ev.FileFD = intPtr(fileFD)
+	ev.FileFlags = intPtr(fileFlags)
+	ev.FileBytes = nil
+	ev.FileDev = nil
+	ev.FileIno = nil
+	return ev
+}
+
+func BuildFileSaveEvent(base CommandEvent, filePath string, fileFD int, fileBytes int64) CommandEvent {
+	ev := base
+	ev.RecordType = RecordTypeFileSave
+	ev.FilePath = strings.TrimSpace(filePath)
+	ev.FileFD = intPtr(fileFD)
+	ev.FileBytes = int64Ptr(fileBytes)
+	ev.DurationNS = nil
+	ev.FileFlags = nil
+	ev.FileDev = nil
+	ev.FileIno = nil
 	return ev
 }
 
@@ -544,6 +575,14 @@ func saturatingUint64ToInt64(v uint64) int64 {
 		return int64(maxInt64)
 	}
 	return int64(v)
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
 }
 
 func lookupUser(uid uint32) string {

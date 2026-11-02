@@ -11,15 +11,70 @@ import (
 	"errors"
 	"math"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf/asm"
 	"github.com/jfut/prec/internal/config"
 	"github.com/jfut/prec/internal/events"
 	"github.com/jfut/prec/internal/logger"
+	"golang.org/x/sys/unix"
 )
+
+func TestCompileCaptureFilter(t *testing.T) {
+	t.Parallel()
+
+	current, err := user.Current()
+	if err != nil {
+		t.Fatalf("current user lookup failed: %v", err)
+	}
+	currentGroup, err := user.LookupGroupId(current.Gid)
+	if err != nil {
+		t.Fatalf("current group lookup failed: %v", err)
+	}
+
+	policy, err := compileCaptureFilter([]string{
+		"+uid>=1000&&gid!=0",
+		"+user=" + current.Username,
+		"+group=" + currentGroup.Name,
+		"+comm=php-fpm",
+	})
+	if err != nil {
+		t.Fatalf("compileCaptureFilter returned error: %v", err)
+	}
+	if len(policy.rules) != 4 {
+		t.Fatalf("compiled rules=%d want=4", len(policy.rules))
+	}
+	if !policy.hasComm {
+		t.Fatalf("compiled policy does not record comm usage")
+	}
+	if policy.rules[0][0].field != captureFieldUID || policy.rules[0][0].op != ">=" || policy.rules[0][0].value != 1000 {
+		t.Fatalf("unexpected numeric clause: %+v", policy.rules[0][0])
+	}
+}
+
+func TestCompileCaptureFilterRejectsUnsupportedRules(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"-uid=1000",
+		"+file_path=/etc/shadow",
+		"+comm~=php",
+		"+uid=",
+	}
+	for _, raw := range tests {
+		raw := raw
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			if _, err := compileCaptureFilter([]string{raw}); err == nil {
+				t.Fatalf("compileCaptureFilter(%q) succeeded", raw)
+			}
+		})
+	}
+}
 
 func TestParseOffsetFromFormat(t *testing.T) {
 	t.Parallel()
@@ -37,6 +92,24 @@ format:
 	}
 	if got != 12 {
 		t.Fatalf("got=%d want=%d", got, 12)
+	}
+}
+
+func TestParseFieldFromFormatMatchesExactFieldName(t *testing.T) {
+	t.Parallel()
+
+	format := `name: sys_enter_openat
+format:
+	field:unsigned char common_flags;	offset:2;	size:1;	signed:0;
+	field:int flags;	offset:32;	size:8;	signed:0;
+`
+
+	got, size, err := parseFieldFromFormat(format, "flags")
+	if err != nil {
+		t.Fatalf("parseFieldFromFormat returned error: %v", err)
+	}
+	if got != 32 || size != asm.DWord {
+		t.Fatalf("got offset/size=%d/%v want=%d/%v", got, size, 32, asm.DWord)
 	}
 }
 
@@ -68,7 +141,7 @@ func TestParsePerfSampleExec(t *testing.T) {
 	}
 	copy(raw[perfSampleFilenameOffset:], []byte("/bin/echo\x00"))
 
-	eventType, tgid, tid, status, gotKtime, exeHint, ok := parsePerfSample(raw)
+	eventType, tgid, tid, status, status2, gotKtime, exeHint, ok := parsePerfSample(raw)
 	if !ok {
 		t.Fatalf("expected ok")
 	}
@@ -83,6 +156,9 @@ func TestParsePerfSampleExec(t *testing.T) {
 	}
 	if status != 0 {
 		t.Fatalf("status=%d want=0", status)
+	}
+	if status2 != 0 {
+		t.Fatalf("status2=%d want=0", status2)
 	}
 	if gotKtime != ktime {
 		t.Fatalf("ktime=%d want=%d", gotKtime, ktime)
@@ -106,7 +182,7 @@ func TestParsePerfSampleExecResultNegative(t *testing.T) {
 		raw[perfSampleStatusOffset+i] = byte(uint64(ret) >> (8 * i))
 	}
 
-	eventType, tgid, tid, status, _, _, ok := parsePerfSample(raw)
+	eventType, tgid, tid, status, status2, _, _, ok := parsePerfSample(raw)
 	if !ok {
 		t.Fatalf("expected ok")
 	}
@@ -118,6 +194,458 @@ func TestParsePerfSampleExecResultNegative(t *testing.T) {
 	}
 	if status != -2 {
 		t.Fatalf("status=%d want=-2", status)
+	}
+	if status2 != 0 {
+		t.Fatalf("status2=%d want=0", status2)
+	}
+}
+
+func TestParsePerfSampleFileOpenEnter(t *testing.T) {
+	t.Parallel()
+
+	raw := make([]byte, perfSampleSize)
+	raw[perfSampleTypeOffset] = perfEventTypeOpenEnter
+	pidTgid := (uint64(7000) << 32) | 7001
+	for i := 0; i < 8; i++ {
+		raw[perfSamplePidTgidOffset+i] = byte(pidTgid >> (8 * i))
+	}
+	flags := int64(unix.O_CREAT | unix.O_WRONLY)
+	for i := 0; i < 8; i++ {
+		raw[perfSampleStatusOffset+i] = byte(uint64(flags) >> (8 * i))
+	}
+	dirfd := int64(9)
+	for i := 0; i < 8; i++ {
+		raw[perfSampleStatus2Offset+i] = byte(uint64(dirfd) >> (8 * i))
+	}
+	copy(raw[perfSampleFilenameOffset:], []byte("tmp/file.log\x00"))
+
+	eventType, tgid, tid, status, status2, _, exeHint, ok := parsePerfSample(raw)
+	if !ok {
+		t.Fatalf("expected ok")
+	}
+	if eventType != perfEventTypeOpenEnter {
+		t.Fatalf("eventType=%d want=%d", eventType, perfEventTypeOpenEnter)
+	}
+	if tgid != 7000 || tid != 7001 {
+		t.Fatalf("unexpected tgid/tid: %d/%d", tgid, tid)
+	}
+	if status != flags {
+		t.Fatalf("status=%d want=%d", status, flags)
+	}
+	if status2 != dirfd {
+		t.Fatalf("status2=%d want=%d", status2, dirfd)
+	}
+	if exeHint != "tmp/file.log" {
+		t.Fatalf("exeHint=%q want=%q", exeHint, "tmp/file.log")
+	}
+}
+
+func TestParsePerfSampleFileOpenEnterSignExtendsDirFD(t *testing.T) {
+	t.Parallel()
+
+	raw := make([]byte, perfSampleSize)
+	raw[perfSampleTypeOffset] = perfEventTypeOpenEnter
+	pidTgid := (uint64(7000) << 32) | 7001
+	for i := 0; i < 8; i++ {
+		raw[perfSamplePidTgidOffset+i] = byte(pidTgid >> (8 * i))
+	}
+	dirfd := int32(unix.AT_FDCWD)
+	for i := 0; i < 4; i++ {
+		raw[perfSampleStatus2Offset+i] = byte(uint32(dirfd) >> (8 * i))
+	}
+	copy(raw[perfSampleFilenameOffset:], []byte("tmp/file.log\x00"))
+
+	_, _, _, _, status2, _, _, ok := parsePerfSample(raw)
+	if !ok {
+		t.Fatalf("expected ok")
+	}
+	if status2 != int64(unix.AT_FDCWD) {
+		t.Fatalf("status2=%d want=%d", status2, unix.AT_FDCWD)
+	}
+}
+
+func TestNormalizeFilePathPrefersDirFDBase(t *testing.T) {
+	t.Parallel()
+
+	got := normalizeFilePath("nested/file.log", "/cwd", "/tracked/root", true)
+	if got != "/tracked/root/nested/file.log" {
+		t.Fatalf("got=%q want=%q", got, "/tracked/root/nested/file.log")
+	}
+}
+
+func TestNormalizeFilePathFallsBackToCWD(t *testing.T) {
+	t.Parallel()
+
+	got := normalizeFilePath("nested/file.log", "/cwd", "", false)
+	if got != "/cwd/nested/file.log" {
+		t.Fatalf("got=%q want=%q", got, "/cwd/nested/file.log")
+	}
+}
+
+func TestNormalizeFilePathDoesNotFallbackToCWDWhenDirFDMissing(t *testing.T) {
+	t.Parallel()
+
+	got := normalizeFilePath("nested/file.log", "/cwd", "", true)
+	if got != "nested/file.log" {
+		t.Fatalf("got=%q want=%q", got, "nested/file.log")
+	}
+}
+
+func TestResolveRegularFilePathAcceptsRegularFile(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	p := filepath.Join(tmpDir, "demo.log")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatalf("os.Create: %v", err)
+	}
+	defer f.Close()
+
+	got, ok := resolveRegularFilePath(os.Getpid(), int(f.Fd()))
+	if !ok {
+		t.Fatalf("resolveRegularFilePath returned ok=false")
+	}
+	if got != p {
+		t.Fatalf("got=%q want=%q", got, p)
+	}
+}
+
+func TestResolveRegularFileIdentityAcceptsRegularFile(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	p := filepath.Join(tmpDir, "identity.log")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatalf("os.Create: %v", err)
+	}
+	defer f.Close()
+
+	identity, ok := resolveRegularFileIdentity(os.Getpid(), int(f.Fd()))
+	if !ok || !identity.valid {
+		t.Fatalf("resolveRegularFileIdentity returned invalid identity: %+v", identity)
+	}
+	if identity.dev == 0 || identity.ino == 0 {
+		t.Fatalf("unexpected zero identity: %+v", identity)
+	}
+}
+
+func TestResolveRegularFilePathRejectsDevice(t *testing.T) {
+	t.Parallel()
+
+	f, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("os.OpenFile: %v", err)
+	}
+	defer f.Close()
+
+	if got, ok := resolveRegularFilePath(os.Getpid(), int(f.Fd())); ok {
+		t.Fatalf("got=%q want non-regular target to be rejected", got)
+	}
+}
+
+func TestTracepointFieldOffsetAndSizeAny(t *testing.T) {
+	t.Parallel()
+
+	format := `name: sys_enter_unlinkat
+format:
+	field:const char * pathname;	offset:24;	size:8;	signed:0;
+	field:int dfd;	offset:16;	size:8;	signed:1;
+`
+
+	offset, size, err := parseFieldFromFormat(format, "pathname")
+	if err != nil {
+		t.Fatalf("parseFieldFromFormat returned error: %v", err)
+	}
+	if offset != 24 || size != asm.DWord {
+		t.Fatalf("got offset/size=%d/%v want=%d/%v", offset, size, 24, asm.DWord)
+	}
+}
+
+func TestBuildFileOpenEventUsesPendingProcessSnapshot(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "a.log")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("os.OpenFile: %v", err)
+	}
+	defer f.Close()
+	pid := os.Getpid()
+
+	svc := &Service{
+		pendingEvents: map[int]events.CommandEvent{
+			pid: {
+				Timestamp:  "2026-05-23T10:00:00Z",
+				EventID:    "boot-200",
+				UID:        1000,
+				GID:        1000,
+				User:       "admin",
+				Group:      "admin",
+				PID:        pid,
+				PPID:       1,
+				Comm:       "touch",
+				Exe:        "/usr/bin/touch",
+				Cwd:        tmpDir,
+				Argv:       []string{"touch", "a.log"},
+				Argc:       2,
+				Source:     events.SourceUser,
+				RecordType: events.RecordTypeStart,
+			},
+		},
+		pendingOpen: map[int]fileOpenAttempt{
+			2001: {
+				tgid:      pid,
+				filename:  "a.log",
+				dirfd:     unix.AT_FDCWD,
+				flags:     int64(unix.O_CREAT | unix.O_EXCL | unix.O_WRONLY),
+				timestamp: 120,
+			},
+		},
+	}
+	svc.buildStartEventFn = func(tgid int, exeHint string, timestamp string, eventID string) (events.CommandEvent, error) {
+		return events.CommandEvent{}, errors.New("proc is already gone")
+	}
+
+	openEvent, ok, err := svc.buildFileOpenEvent(2001, int(f.Fd()), "2026-05-23T10:00:01Z")
+	if err != nil {
+		t.Fatalf("buildFileOpenEvent returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("buildFileOpenEvent returned ok=false")
+	}
+	if openEvent.RecordType != events.RecordTypeFileOpen {
+		t.Fatalf("open record_type=%q want=%q", openEvent.RecordType, events.RecordTypeFileOpen)
+	}
+	if openEvent.FilePath != path {
+		t.Fatalf("open file_path=%q want=%q", openEvent.FilePath, path)
+	}
+	if openEvent.EventID == "boot-200" || openEvent.EventID == "" {
+		t.Fatalf("file event should receive a fresh event_id, got %q", openEvent.EventID)
+	}
+}
+
+func TestBuildFileOpenEventsDropsUntrackedPath(t *testing.T) {
+	t.Parallel()
+
+	pid := os.Getpid()
+	svc := &Service{
+		pendingEvents: map[int]events.CommandEvent{
+			pid: {
+				Timestamp:  "2026-05-23T10:00:00Z",
+				EventID:    "boot-201",
+				UID:        1000,
+				GID:        1000,
+				User:       "admin",
+				Group:      "admin",
+				PID:        pid,
+				PPID:       1,
+				Comm:       "bash",
+				Exe:        "/usr/bin/bash",
+				Cwd:        "/tmp",
+				Argv:       []string{"bash", "-c", "echo > /dev/null"},
+				Argc:       3,
+				Source:     events.SourceUser,
+				RecordType: events.RecordTypeStart,
+			},
+		},
+		pendingOpen: map[int]fileOpenAttempt{
+			2002: {
+				tgid:      pid,
+				filename:  "/dev/null",
+				dirfd:     unix.AT_FDCWD,
+				flags:     int64(unix.O_WRONLY | unix.O_TRUNC),
+				timestamp: 120,
+			},
+		},
+	}
+
+	_, ok, err := svc.buildFileOpenEvent(2002, 3, "2026-05-23T10:00:01Z")
+	if err != nil {
+		t.Fatalf("buildFileOpenEvent returned error: %v", err)
+	}
+	if ok {
+		t.Fatalf("buildFileOpenEvent should drop untracked paths")
+	}
+}
+
+func TestShouldDropPrecdSelfLogWrite(t *testing.T) {
+	t.Parallel()
+
+	base := events.CommandEvent{
+		Comm: "precd",
+		Exe:  "/usr/bin/precd",
+	}
+	if !shouldDropPrecdSelfLogWrite(base, "/var/log/prec/prec.log", "/var/log/prec/prec.log") {
+		t.Fatalf("precd self log write should be dropped")
+	}
+	if shouldDropPrecdSelfLogWrite(base, "/tmp/other.log", "/var/log/prec/prec.log") {
+		t.Fatalf("different path must not be dropped")
+	}
+	if shouldDropPrecdSelfLogWrite(events.CommandEvent{Comm: "bash", Exe: "/usr/bin/bash"}, "/var/log/prec/prec.log", "/var/log/prec/prec.log") {
+		t.Fatalf("non-precd writer must not be dropped")
+	}
+}
+
+func TestShouldSuppressDuplicateFileSave(t *testing.T) {
+	t.Parallel()
+
+	svc := &Service{
+		cfg: config.Config{
+			FileSaveDedupSec: 1,
+		},
+		recentFileSaves: make(map[fileSaveDedupKey]uint64),
+	}
+
+	if svc.shouldSuppressDuplicateFileSave(1234, "/tmp/a.log", uint64(10*time.Second)) {
+		t.Fatalf("first save must not be suppressed")
+	}
+	if !svc.shouldSuppressDuplicateFileSave(1234, "/tmp/a.log", uint64(10*time.Second)+500_000_000) {
+		t.Fatalf("duplicate save in window must be suppressed")
+	}
+	if svc.shouldSuppressDuplicateFileSave(1234, "/tmp/b.log", uint64(10*time.Second)+500_000_000) {
+		t.Fatalf("different path must not be suppressed")
+	}
+	if svc.shouldSuppressDuplicateFileSave(5678, "/tmp/a.log", uint64(10*time.Second)+500_000_000) {
+		t.Fatalf("different process must not be suppressed")
+	}
+	if svc.shouldSuppressDuplicateFileSave(1234, "/tmp/a.log", uint64(11*time.Second)) {
+		t.Fatalf("save after window must not be suppressed")
+	}
+}
+
+func TestShouldEmitFileOpenEvent(t *testing.T) {
+	t.Parallel()
+
+	if shouldEmitFileOpenEvent(unix.O_RDONLY, false) {
+		t.Fatalf("read-only open must not be emitted")
+	}
+	if !shouldEmitFileOpenEvent(unix.O_RDONLY, true) {
+		t.Fatalf("read-only open must be emitted with capture filter")
+	}
+	if !shouldEmitFileOpenEvent(unix.O_RDWR, false) {
+		t.Fatalf("read-write open must be emitted")
+	}
+	if !shouldEmitFileOpenEvent(unix.O_WRONLY, false) {
+		t.Fatalf("write-only open must be emitted")
+	}
+	if !shouldEmitFileOpenEvent(unix.O_RDONLY|unix.O_CREAT, false) {
+		t.Fatalf("create open must be emitted")
+	}
+}
+
+func TestShouldTrackFilePath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{path: "a", want: true},
+		{path: "/tmp/a", want: true},
+		{path: "/dev/null", want: false},
+		{path: "/proc/self/mem", want: false},
+		{path: "/sys/kernel/debug", want: false},
+		{path: "anon_inode:[eventfd]", want: false},
+	}
+
+	for _, tt := range tests {
+		if got := shouldTrackFilePath(tt.path); got != tt.want {
+			t.Fatalf("path=%q got=%v want=%v", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestShouldRecordFileEventDropsUntrackedPath(t *testing.T) {
+	t.Parallel()
+
+	svc := &Service{cfg: config.Config{CollectFileScope: "all"}}
+	if svc.shouldRecordFileEvent(events.CommandEvent{
+		FilePath: "anon_inode:[eventfd]",
+		Source:   events.SourceUser,
+	}) {
+		t.Fatalf("anon_inode path must be dropped")
+	}
+	if !svc.shouldRecordFileEvent(events.CommandEvent{
+		FilePath: "/tmp/a",
+		Source:   events.SourceUser,
+	}) {
+		t.Fatalf("regular path must be kept")
+	}
+}
+
+func TestMatchesConfiguredFileScope(t *testing.T) {
+	t.Parallel()
+
+	homeDir := t.TempDir()
+	userHomeCache.Store(uint32(1000), homeDir)
+	t.Cleanup(func() {
+		userHomeCache.Delete(uint32(1000))
+	})
+
+	if !matchesConfiguredFileScope(events.CommandEvent{
+		UID:      1000,
+		FilePath: filepath.Join(homeDir, "project", "a.txt"),
+	}, "user_visible") {
+		t.Fatalf("regular file under home must match user_visible")
+	}
+	if !matchesConfiguredFileScope(events.CommandEvent{
+		UID:      1000,
+		FilePath: "/storage/work/project/a.txt",
+	}, "user_visible") {
+		t.Fatalf("regular file outside home must match user_visible")
+	}
+	if matchesConfiguredFileScope(events.CommandEvent{
+		UID:      1000,
+		FilePath: filepath.Join(homeDir, ".codex", "logs.sqlite-wal"),
+	}, "user_visible") {
+		t.Fatalf("hidden app-state path must not match user_visible")
+	}
+	if matchesConfiguredFileScope(events.CommandEvent{
+		UID:      1000,
+		FilePath: filepath.Join(homeDir, "tmp", "etilqs_abc"),
+	}, "user_visible") {
+		t.Fatalf("editor temp file must not match user_visible")
+	}
+	if !matchesConfiguredFileScope(events.CommandEvent{
+		UID:      1000,
+		FilePath: filepath.Join(homeDir, ".bashrc"),
+	}, "user_visible") {
+		t.Fatalf("top-level dotfile must match user_visible")
+	}
+	if !matchesConfiguredFileScope(events.CommandEvent{
+		UID:      1000,
+		FilePath: "/storage/work/project/.env",
+	}, "user_visible") {
+		t.Fatalf("leaf dotfile must match user_visible")
+	}
+	if !matchesConfiguredFileScope(events.CommandEvent{
+		UID:      1000,
+		FilePath: filepath.Join(homeDir, ".codex", "logs.sqlite-wal"),
+	}, "home") {
+		t.Fatalf("home scope must include hidden app-state path")
+	}
+}
+
+func TestMatchesConfiguredFileSource(t *testing.T) {
+	t.Parallel()
+
+	if !matchesConfiguredFileSource(events.SourceUser, "user") {
+		t.Fatalf("user source must match user config")
+	}
+	if matchesConfiguredFileSource(events.SourceSystem, "user") {
+		t.Fatalf("system source must not match user config")
+	}
+	if !matchesConfiguredFileSource(events.SourceSystem, "system") {
+		t.Fatalf("system source must match system config")
+	}
+	if !matchesConfiguredFileSource(events.SourceUser, "any") {
+		t.Fatalf("user source must match any config")
+	}
+	if !matchesConfiguredFileSource(events.SourceSystem, "any") {
+		t.Fatalf("system source must match any config")
 	}
 }
 
@@ -321,6 +849,41 @@ func TestHandleLostSamplesLogMode(t *testing.T) {
 	}
 	if got[0].LostTotal == nil || *got[0].LostTotal != 7 {
 		t.Fatalf("lost_samples_total=%v want=7", got[0].LostTotal)
+	}
+}
+
+func TestHandleLostSamplesLogModeRateLimitsOutput(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "prec.log")
+	w, err := logger.NewJSONLWriter(logPath, config.CompressNo, 0)
+	if err != nil {
+		t.Fatalf("NewJSONLWriter: %v", err)
+	}
+	defer w.Close()
+
+	svc := &Service{
+		cfg:    config.Config{LostSamplesAction: config.LostSamplesActionLog},
+		writer: w,
+	}
+
+	if err := svc.handleLostSamples(3); err != nil {
+		t.Fatalf("first handleLostSamples: %v", err)
+	}
+	if err := svc.handleLostSamples(5); err != nil {
+		t.Fatalf("second handleLostSamples: %v", err)
+	}
+
+	got := readLossEventsFromLog(t, logPath)
+	if len(got) != 1 {
+		t.Fatalf("got=%d want=1", len(got))
+	}
+	if got[0].LostSamples == nil || *got[0].LostSamples != 3 {
+		t.Fatalf("lost_samples=%v want=3", got[0].LostSamples)
+	}
+	if got[0].LostTotal == nil || *got[0].LostTotal != 3 {
+		t.Fatalf("lost_samples_total=%v want=3", got[0].LostTotal)
 	}
 }
 

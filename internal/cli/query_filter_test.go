@@ -117,26 +117,32 @@ func TestBuildQueryFilterValid(t *testing.T) {
 		},
 		{
 			name:  "record type string query",
-			specs: []string{"record_type=loss"},
+			specs: []string{"record_type=proc_loss"},
 			event: events.CommandEvent{RecordType: events.RecordTypeLoss},
 			want:  true,
 		},
 		{
-			name:  "record type command start query",
-			specs: []string{"record_type=start"},
-			event: events.CommandEvent{RecordType: events.RecordTypeStart},
-			want:  true,
-		},
-		{
-			name:  "record type command end query",
-			specs: []string{"record_type=end"},
-			event: events.CommandEvent{RecordType: events.RecordTypeEnd},
+			name:  "record type command query",
+			specs: []string{"record_type=proc_command"},
+			event: events.CommandEvent{RecordType: events.RecordTypeCommand},
 			want:  true,
 		},
 		{
 			name:  "record type exec failure query",
-			specs: []string{"record_type=fail"},
+			specs: []string{"record_type=proc_fail"},
 			event: events.CommandEvent{RecordType: events.RecordTypeFail},
+			want:  true,
+		},
+		{
+			name:  "record type file open query",
+			specs: []string{"record_type=file_open"},
+			event: events.CommandEvent{RecordType: events.RecordTypeFileOpen},
+			want:  true,
+		},
+		{
+			name:  "record type file save query",
+			specs: []string{"record_type=file_save"},
+			event: events.CommandEvent{RecordType: events.RecordTypeFileSave},
 			want:  true,
 		},
 		{
@@ -181,6 +187,18 @@ func TestBuildQueryFilterValid(t *testing.T) {
 			event: events.CommandEvent{DurationNS: int64Ptr(3 * int64(time.Second))},
 			want:  true,
 		},
+		{
+			name:  "file bytes numeric query",
+			specs: []string{"file_bytes>=100"},
+			event: events.CommandEvent{FileBytes: int64Ptr(128)},
+			want:  true,
+		},
+		{
+			name:  "file inode numeric query",
+			specs: []string{"file_ino=42"},
+			event: events.CommandEvent{FileIno: uint64Ptr(42)},
+			want:  true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -215,6 +233,12 @@ func TestBuildQueryFilterInvalid(t *testing.T) {
 		{name: "dynamic string field with numeric operator", specs: []string{"user>=admin"}},
 		{name: "source invalid value", specs: []string{"source=robot"}},
 		{name: "record type invalid value", specs: []string{"record_type=robot"}},
+		{name: "file close is not a supported query record type", specs: []string{"record_type=file_close"}},
+		{name: "file read is not a supported query record type", specs: []string{"record_type=file_read"}},
+		{name: "file create is not a supported query record type", specs: []string{"record_type=file_create"}},
+		{name: "file delete is not a supported query record type", specs: []string{"record_type=file_delete"}},
+		{name: "raw proc_start is not a query record type", specs: []string{"record_type=proc_start"}},
+		{name: "raw proc_end is not a query record type", specs: []string{"record_type=proc_end"}},
 		{name: "or empty right side", specs: []string{"user=user1||"}},
 		{name: "or empty left side", specs: []string{"||user=root"}},
 		{name: "and empty right side", specs: []string{"uid>=1000&&"}},

@@ -11,6 +11,44 @@
 # no: ignored
 # compress_level = 3
 
+# Enable file_open event collection from openat. Without capture_filter, only
+# write-capable opens are sent to the perf ring.
+# collect_file_open = false
+
+# Enable file_save event collection from write-family syscalls.
+# collect_file_save = false
+
+# File event source scope.
+# Supported: "user" (default), "system", "any"
+# collect_file_source = "user"
+
+# File path scope for collected file events.
+# "user_visible" keeps user-home files and excludes common hidden app-state paths.
+# Supported: "user_visible" (default), "home", "all"
+# collect_file_scope = "user_visible"
+
+# Suppress repeated file_save records for the same process and file path
+# within the configured number of seconds.
+# Set to 0 to disable suppression.
+# file_save_dedup_sec = 1
+
+# Early allowlist applied in eBPF before events reach the perf ring.
+# Rules and || terms are ORed. Each rule must start with + and clauses use && for AND.
+# Supported fields: uid, gid, pid, user, group, comm (comm is exact match).
+# user/group names are resolved when precd starts.
+# Fields such as exe, argv, file_path, record_type, and source are not
+# available at this stage and cause precd startup to fail if specified.
+# capture_filter = [
+#   "+uid>=1000",
+#   "+user=apache",
+#   "+user=nginx",
+#   "+comm=php-fpm",
+# ]
+# capture_filter = []
+# When collect_file_open=true and capture_filter is non-empty, matching
+# read-only opens are also recorded. Keep this allowlist narrow to avoid logs
+# growing rapidly on busy services.
+
 # Store only source=user events when true.
 # Example: user_only = true
 # user_only = false

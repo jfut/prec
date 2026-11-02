@@ -33,8 +33,14 @@ type Config struct {
 	LogPath           string   `toml:"log_path"`
 	Compress          string   `toml:"compress"`
 	CompressLevel     int      `toml:"compress_level"`
+	CollectFileOpen   bool     `toml:"collect_file_open"`
+	CollectFileSave   bool     `toml:"collect_file_save"`
+	CollectFileSource string   `toml:"collect_file_source"`
+	CollectFileScope  string   `toml:"collect_file_scope"`
+	FileSaveDedupSec  int      `toml:"file_save_dedup_sec"`
 	FilterDefault     string   `toml:"filter_default"`
 	Filter            []string `toml:"filter"`
+	CaptureFilter     []string `toml:"capture_filter"`
 	UserOnly          bool     `toml:"user_only"`
 	LostSamplesAction string   `toml:"lost_samples_action"`
 	MaxArgLength      int      `toml:"max_arg_length"`
@@ -47,6 +53,11 @@ func Default() Config {
 		// Keep zstd as the default to reduce log size when config is not set.
 		Compress:          CompressZstd,
 		CompressLevel:     DefaultZstdCompressLevel,
+		CollectFileOpen:   false,
+		CollectFileSave:   false,
+		CollectFileSource: "user",
+		CollectFileScope:  "user_visible",
+		FileSaveDedupSec:  1,
 		FilterDefault:     "allow",
 		LostSamplesAction: LostSamplesActionLog,
 		MaxArgLength:      1024,
@@ -92,11 +103,28 @@ func Load(path string) (Config, error) {
 	if cfg.LostSamplesAction == "" {
 		cfg.LostSamplesAction = LostSamplesActionLog
 	}
+	cfg.CollectFileSource = strings.ToLower(strings.TrimSpace(cfg.CollectFileSource))
+	if cfg.CollectFileSource == "" {
+		cfg.CollectFileSource = "user"
+	}
+	cfg.CollectFileScope = strings.ToLower(strings.TrimSpace(cfg.CollectFileScope))
+	if cfg.CollectFileScope == "" {
+		cfg.CollectFileScope = "user_visible"
+	}
 	if cfg.MaxArgLength <= 0 {
 		cfg.MaxArgLength = 1024
 	}
 	if cfg.MaxArgs <= 0 {
 		cfg.MaxArgs = 128
+	}
+	if err := validateFileSaveDedupSec(cfg.FileSaveDedupSec); err != nil {
+		return Config{}, err
+	}
+	if err := validateCollectFileSource(cfg.CollectFileSource); err != nil {
+		return Config{}, err
+	}
+	if err := validateCollectFileScope(cfg.CollectFileScope); err != nil {
+		return Config{}, err
 	}
 	if err := validateCompression(cfg.Compress, cfg.CompressLevel); err != nil {
 		return Config{}, err
@@ -141,6 +169,31 @@ func validateFilterDefault(v string) error {
 		return nil
 	default:
 		return fmt.Errorf("invalid filter_default: %q (allowed: allow, deny)", v)
+	}
+}
+
+func validateFileSaveDedupSec(v int) error {
+	if v < 0 {
+		return fmt.Errorf("invalid file_save_dedup_sec: %d (allowed: 0 or greater)", v)
+	}
+	return nil
+}
+
+func validateCollectFileSource(v string) error {
+	switch v {
+	case "user", "system", "any":
+		return nil
+	default:
+		return fmt.Errorf("invalid collect_file_source: %q (allowed: user, system, any)", v)
+	}
+}
+
+func validateCollectFileScope(v string) error {
+	switch v {
+	case "all", "home", "user_visible":
+		return nil
+	default:
+		return fmt.Errorf("invalid collect_file_scope: %q (allowed: all, home, user_visible)", v)
 	}
 }
 

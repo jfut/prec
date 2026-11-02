@@ -30,6 +30,10 @@ func int64Ptr(v int64) *int64 {
 	return &v
 }
 
+func uint64Ptr(v uint64) *uint64 {
+	return &v
+}
+
 func waitForLineCount(t *testing.T, mu *sync.Mutex, lines *[]string, want int) {
 	t.Helper()
 

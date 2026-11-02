@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
@@ -29,7 +30,10 @@ type JSONLWriter struct {
 	compress      string
 	compressLevel int
 	zstdEncoder   *zstd.Encoder
+	lastSyncAt    time.Time
 }
+
+const logSyncInterval = time.Second
 
 func NewJSONLWriter(logPath string, compress string, compressLevel int) (*JSONLWriter, error) {
 	dir := filepath.Dir(logPath)
@@ -91,19 +95,36 @@ func (w *JSONLWriter) WriteEvent(ev events.CommandEvent) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	var err error
 	switch w.compress {
 	case config.CompressNo:
-		if err := w.enc.Encode(ev); err != nil {
-			return fmt.Errorf("write event: %w", err)
-		}
-		return nil
+		err = w.enc.Encode(ev)
 	case config.CompressGzip:
-		return w.writeGzipEvent(ev)
+		err = w.writeGzipEvent(ev)
 	case config.CompressZstd:
-		return w.writeZstdEvent(ev)
+		err = w.writeZstdEvent(ev)
 	default:
 		return fmt.Errorf("unsupported compress mode: %s", w.compress)
 	}
+	if err != nil {
+		return fmt.Errorf("write event: %w", err)
+	}
+	if err := w.syncIfDue(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *JSONLWriter) syncIfDue() error {
+	now := time.Now()
+	if !w.lastSyncAt.IsZero() && now.Sub(w.lastSyncAt) < logSyncInterval {
+		return nil
+	}
+	if err := w.f.Sync(); err != nil {
+		return fmt.Errorf("sync log file: %w", err)
+	}
+	w.lastSyncAt = now
+	return nil
 }
 
 func (w *JSONLWriter) Reopen() error {
@@ -129,9 +150,13 @@ func (w *JSONLWriter) Reopen() error {
 	if err := closeZstdEncoder(oldZstd); err != nil {
 		firstErr = err
 	}
+	if err := oldFile.Sync(); err != nil && firstErr == nil {
+		firstErr = err
+	}
 	if err := oldFile.Close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
+	w.lastSyncAt = time.Time{}
 	return firstErr
 }
 
@@ -240,6 +265,9 @@ func (w *JSONLWriter) Close() error {
 
 	var firstErr error
 	if err := closeZstdEncoder(w.zstdEncoder); err != nil {
+		firstErr = err
+	}
+	if err := w.f.Sync(); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	if err := w.f.Close(); err != nil && firstErr == nil {

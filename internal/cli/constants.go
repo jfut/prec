@@ -21,7 +21,7 @@ const (
 	helpWrapUpperBound = 90
 )
 
-const commandEndRecordTypeMarker = `"record_type":"end"`
+const commandEndRecordTypeMarker = `"record_type":"proc_end"`
 
 var gzipFrameMagic = []byte{0x1f, 0x8b, 0x08}
 var zstdFrameMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}

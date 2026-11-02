@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -135,6 +136,34 @@ func TestFormatEventForOutputJSON(t *testing.T) {
 	}
 }
 
+func TestFormatEventForOutputJSONOmitsUnavailableFileFields(t *testing.T) {
+	t.Parallel()
+
+	ev := events.CommandEvent{
+		Timestamp:  "2026-07-14T03:15:14Z",
+		User:       "admin",
+		Group:      "admin",
+		RecordType: events.RecordTypeCommand,
+		Argv:       []string{"/bin/vi", "a"},
+	}
+	got := formatEventForOutput(ev, outputOptions{
+		format:     outputFormatJSON,
+		fileEvents: true,
+	})
+	var record map[string]any
+	if err := json.Unmarshal([]byte(got), &record); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	for _, field := range []string{"file_path", "file_fd", "file_bytes", "file_flags", "file_dev", "file_ino"} {
+		if _, ok := record[field]; ok {
+			t.Fatalf("unexpected process field %q in JSON: %s", field, got)
+		}
+	}
+	if record["record_type"] != events.RecordTypeCommand {
+		t.Fatalf("record_type=%v want=%s", record["record_type"], events.RecordTypeCommand)
+	}
+}
+
 func TestFormatEventForOutputCSV(t *testing.T) {
 	t.Parallel()
 
@@ -213,7 +242,7 @@ func TestParseOutputFields(t *testing.T) {
 
 	t.Run("all with remove list", func(t *testing.T) {
 		t.Parallel()
-		got, err := parseOutputFields("all,-end_timestamp,event_id,duration_ns,duration,cgroup,tty,tty_nr,source,record_type,exit_status,exec_errno,exec_error,lost_samples,lost_samples_total,parent_comm,parent_exe,parent_cmdline,parent_tty,parent_tty_nr,auid,session_id")
+		got, err := parseOutputFields("all,-end_timestamp,event_id,duration_ns,duration,cgroup,tty,tty_nr,source,record_type,exit_status,exec_errno,exec_error,lost_samples,lost_samples_total,parent_comm,parent_exe,parent_cmdline,parent_tty,parent_tty_nr,file_path,file_fd,file_bytes,file_flags,file_dev,file_ino,auid,session_id")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -290,8 +319,78 @@ func TestFormatEventForOutputWithAuditAndLossFields(t *testing.T) {
 		fullTime: false,
 		fields:   []string{"auid", "session_id", "record_type", "exec_errno", "exec_error", "lost_samples", "lost_samples_total"},
 	})
-	if got != "1000 44 loss 2 no such file or directory 3 10" {
+	if got != "1000 44 proc_loss 2 no such file or directory 3 10" {
 		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+func TestFormatEventForOutputWithFileFields(t *testing.T) {
+	t.Parallel()
+
+	fd := 7
+	bytes := int64(128)
+	flags := 66
+	dev := uint64(8)
+	ino := uint64(42)
+	ev := events.CommandEvent{
+		RecordType: events.RecordTypeFileSave,
+		FilePath:   "/tmp/demo.log",
+		FileFD:     &fd,
+		FileBytes:  &bytes,
+		FileFlags:  &flags,
+		FileDev:    &dev,
+		FileIno:    &ino,
+	}
+	got := formatEventForOutput(ev, outputOptions{
+		fullTime: false,
+		fields:   []string{"record_type", "file_path", "file_fd", "file_bytes", "file_flags", "file_dev", "file_ino"},
+	})
+	if got != "file_save /tmp/demo.log 7 128 66 8 42" {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+func TestFormatEventForOutputWithDefaultFileEventFields(t *testing.T) {
+	t.Parallel()
+
+	fd := 7
+	bytes := int64(128)
+	ev := events.CommandEvent{
+		Timestamp:  "2026-05-23T10:00:00Z",
+		User:       "admin",
+		Group:      "admin",
+		RecordType: events.RecordTypeFileSave,
+		Argv:       []string{"tee", "/tmp/demo.log"},
+		FilePath:   "/tmp/demo.log",
+		FileFD:     &fd,
+		FileBytes:  &bytes,
+	}
+	got := formatEventForOutput(ev, outputOptions{
+		fullTime:   false,
+		fileEvents: true,
+	})
+	if got != "2026-05-23 10:00:00 admin admin file_save /tmp/demo.log 7 128 tee /tmp/demo.log" {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+func TestFormatEventForOutputWithDefaultFileFieldsOmitsEmptyValues(t *testing.T) {
+	t.Parallel()
+
+	ev := events.CommandEvent{
+		Timestamp:  "2026-05-23T10:00:00Z",
+		User:       "admin",
+		Group:      "admin",
+		RecordType: events.RecordTypeCommand,
+		Argv:       []string{"/bin/ls", "--color=tty"},
+	}
+	got := formatEventForOutput(ev, outputOptions{
+		fullTime:   false,
+		fileEvents: true,
+	})
+	want := "2026-05-23 10:00:00 admin admin proc_command /bin/ls --color=tty"
+	if got != want {
+		t.Fatalf("got=%q want=%q", got, want)
 	}
 }
 

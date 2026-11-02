@@ -314,7 +314,7 @@ func findOperator(clause string) (string, int) {
 
 func fieldTypeFor(field string) (string, bool) {
 	switch field {
-	case "uid", "gid", "auid", "session_id", "pid", "ppid", "argc", "tty_nr", "exit_status", "duration_ns", "exec_errno", "lost_samples", "lost_samples_total", "parent_tty_nr":
+	case "uid", "gid", "auid", "session_id", "pid", "ppid", "argc", "tty_nr", "exit_status", "duration_ns", "exec_errno", "lost_samples", "lost_samples_total", "parent_tty_nr", "file_fd", "file_bytes", "file_flags", "file_dev", "file_ino":
 		return fieldTypeNumber, true
 	case "timestamp", "end_timestamp":
 		return fieldTypeTime, true
@@ -393,6 +393,31 @@ func numericValue(field string, ev events.CommandEvent) (int64, bool) {
 		return *ev.LostTotal, true
 	case "parent_tty_nr":
 		return ev.ParentTTYNr, true
+	case "file_fd":
+		if ev.FileFD == nil {
+			return 0, false
+		}
+		return int64(*ev.FileFD), true
+	case "file_bytes":
+		if ev.FileBytes == nil {
+			return 0, false
+		}
+		return *ev.FileBytes, true
+	case "file_flags":
+		if ev.FileFlags == nil {
+			return 0, false
+		}
+		return int64(*ev.FileFlags), true
+	case "file_dev":
+		if ev.FileDev == nil || *ev.FileDev > uint64(^uint64(0)>>1) {
+			return 0, false
+		}
+		return int64(*ev.FileDev), true
+	case "file_ino":
+		if ev.FileIno == nil || *ev.FileIno > uint64(^uint64(0)>>1) {
+			return 0, false
+		}
+		return int64(*ev.FileIno), true
 	default:
 		return 0, false
 	}
@@ -590,14 +615,14 @@ func normalizeRecordTypeValue(raw string) (string, error) {
 	switch raw {
 	case events.RecordTypeCommand:
 		return events.RecordTypeCommand, nil
-	case events.RecordTypeStart:
-		return events.RecordTypeStart, nil
-	case events.RecordTypeEnd:
-		return events.RecordTypeEnd, nil
 	case events.RecordTypeFail:
 		return events.RecordTypeFail, nil
 	case events.RecordTypeLoss:
 		return events.RecordTypeLoss, nil
+	case events.RecordTypeFileOpen:
+		return events.RecordTypeFileOpen, nil
+	case events.RecordTypeFileSave:
+		return events.RecordTypeFileSave, nil
 	default:
 		return "", fmt.Errorf("invalid --query value for record_type: %s", raw)
 	}
