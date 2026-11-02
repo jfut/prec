@@ -13,11 +13,13 @@ import (
 const (
 	SourceUser           = "user"
 	SourceSystem         = "system"
-	RecordTypeStart      = "start"
-	RecordTypeEnd        = "end"
-	RecordTypeCommand    = "command"
-	RecordTypeFail       = "fail"
-	RecordTypeLoss       = "loss"
+	RecordTypeStart      = "proc_start"
+	RecordTypeEnd        = "proc_end"
+	RecordTypeCommand    = "proc_command"
+	RecordTypeFail       = "proc_fail"
+	RecordTypeLoss       = "proc_loss"
+	RecordTypeFileOpen   = "file_open"
+	RecordTypeFileSave   = "file_save"
 	maxCmdlineTextLength = 512
 )
 
@@ -57,6 +59,36 @@ func classifyCommandSource(ev CommandEvent, parent *procSnapshot) string {
 	return SourceSystem
 }
 
+func ClassifyFileEventSource(ev CommandEvent) string {
+	if isInteractiveShellSelf(ev) {
+		return SourceUser
+	}
+	if isUserShellSelf(ev) {
+		return SourceUser
+	}
+	if isUserShellChildProcess(ev) {
+		return SourceUser
+	}
+	if isVSCodeRemoteSSHUserProcess(ev) {
+		return SourceUser
+	}
+	if ev.Source == SourceUser {
+		return SourceUser
+	}
+	return SourceSystem
+}
+
+func isUserShellChildProcess(ev CommandEvent) bool {
+	parent := procSnapshot{
+		Comm:    ev.ParentComm,
+		Exe:     ev.ParentExe,
+		Cmdline: ev.ParentCmdline,
+		TTY:     ev.ParentTTY,
+		TTYNr:   ev.ParentTTYNr,
+	}
+	return isUserShellExecution(ev, &parent)
+}
+
 func isUserShellExecution(ev CommandEvent, parent *procSnapshot) bool {
 	if parent == nil {
 		return false
@@ -66,6 +98,53 @@ func isUserShellExecution(ev CommandEvent, parent *procSnapshot) bool {
 	}
 	// Classify as user only when the immediate parent is a shell.
 	return isShellName(parent.Comm) || isShellName(parent.Exe)
+}
+
+func isInteractiveShellSelf(ev CommandEvent) bool {
+	if !hasInteractiveTTY(ev) {
+		return false
+	}
+	return isShellName(ev.Comm) || isShellName(ev.Exe)
+}
+
+func isUserShellSelf(ev CommandEvent) bool {
+	if !isShellName(ev.Comm) && !isShellName(ev.Exe) {
+		return false
+	}
+	return ev.UID >= 1000
+}
+
+func isVSCodeRemoteSSHUserProcess(ev CommandEvent) bool {
+	if ev.UID < 1000 {
+		return false
+	}
+	return looksLikeVSCodeRemoteSSHText(ev.Exe) ||
+		looksLikeVSCodeRemoteSSHText(ev.ParentExe) ||
+		looksLikeVSCodeRemoteSSHText(ev.ParentCmdline) ||
+		looksLikeVSCodeRemoteSSHArgv(ev.Argv)
+}
+
+func looksLikeVSCodeRemoteSSHArgv(argv []string) bool {
+	for _, arg := range argv {
+		if looksLikeVSCodeRemoteSSHText(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeVSCodeRemoteSSHText(s string) bool {
+	text := strings.ToLower(strings.TrimSpace(s))
+	if text == "" {
+		return false
+	}
+	if strings.Contains(text, ".vscode-server/") {
+		return true
+	}
+	if strings.Contains(text, "openai.chatgpt-") && strings.Contains(text, "/codex") {
+		return true
+	}
+	return strings.Contains(text, "extensionhost") || strings.Contains(text, "remotessh")
 }
 
 func hasInteractiveTTY(ev CommandEvent) bool {

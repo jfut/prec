@@ -168,6 +168,58 @@ func TestBuildCommandEndEvent(t *testing.T) {
 	}
 }
 
+func TestBuildFileOpenEvent(t *testing.T) {
+	t.Parallel()
+
+	base := CommandEvent{
+		Timestamp:  "2026-05-23T10:00:00Z",
+		EventID:    "boot-200",
+		PID:        2000,
+		User:       "admin",
+		Group:      "admin",
+		RecordType: RecordTypeStart,
+	}
+	open := BuildFileOpenEvent(base, "/tmp/a.log", 4, 66)
+	if open.RecordType != RecordTypeFileOpen {
+		t.Fatalf("open record_type=%q want=%q", open.RecordType, RecordTypeFileOpen)
+	}
+	if open.FilePath != "/tmp/a.log" {
+		t.Fatalf("open file_path=%q want=%q", open.FilePath, "/tmp/a.log")
+	}
+	if open.FileFD == nil || *open.FileFD != 4 {
+		t.Fatalf("open file_fd=%v want=4", open.FileFD)
+	}
+	if open.FileFlags == nil || *open.FileFlags != 66 {
+		t.Fatalf("open file_flags=%v want=66", open.FileFlags)
+	}
+
+}
+
+func TestBuildFileSaveEvent(t *testing.T) {
+	t.Parallel()
+
+	base := CommandEvent{
+		Timestamp: "2026-05-23T10:00:00Z",
+		EventID:   "boot-201",
+		PID:       2001,
+		User:      "admin",
+		Group:     "admin",
+	}
+	save := BuildFileSaveEvent(base, "/tmp/a.log", 4, 128)
+	if save.RecordType != RecordTypeFileSave {
+		t.Fatalf("save record_type=%q want=%q", save.RecordType, RecordTypeFileSave)
+	}
+	if save.FilePath != "/tmp/a.log" {
+		t.Fatalf("save file_path=%q want=%q", save.FilePath, "/tmp/a.log")
+	}
+	if save.FileFD == nil || *save.FileFD != 4 {
+		t.Fatalf("save file_fd=%v want=4", save.FileFD)
+	}
+	if save.FileBytes == nil || *save.FileBytes != 128 {
+		t.Fatalf("save file_bytes=%v want=128", save.FileBytes)
+	}
+}
+
 func TestMarshalJSONCommandEndIsCompact(t *testing.T) {
 	t.Parallel()
 

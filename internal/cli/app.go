@@ -21,25 +21,27 @@ type listFilter struct {
 }
 
 type outputOptions struct {
-	tree     bool
-	fullTime bool
-	format   string
-	fields   []string
+	tree       bool
+	fullTime   bool
+	format     string
+	fields     []string
+	fileEvents bool
 }
 
 // rootCLI centralizes flag definitions for prec.
 type rootCLI struct {
-	Input    string   `name:"input" short:"i" help:"Read log file path (default: /var/log/prec/prec.log)"`
-	AllLogs  bool     `name:"all-logs" short:"a" help:"Read current and rotated log files together in list mode and follow initial output"`
-	Source   string   `name:"source" short:"s" help:"Select source: user,system,any (default: user)" default:"user"`
-	Query    []string `name:"query" short:"q" help:"Filter expression, repeatable. Clause format: key op value, op is = != > >= < <= ~= !~=. Use && for AND, || for OR"`
-	Fields   string   `name:"fields" short:"f" help:"Select output fields, comma-separated. Use + to add and - to remove. Supported:\nall,timestamp,end_timestamp,event_id,user,group,\ncommand,uid,gid,auid,session_id,pid,ppid,comm,\nexe,cwd,argv,argc,cgroup,tty,tty_nr,source,\nrecord_type,exit_status,duration_ns,duration,\nexec_errno,exec_error,lost_samples,\nlost_samples_total,parent_comm,parent_exe,\nparent_cmdline,parent_tty,parent_tty_nr"`
-	FullTime bool     `name:"full-time" help:"Print full RFC3339Nano timestamp"`
-	Limit    int      `name:"limit" short:"n" help:"Max rows in list mode; initial rows before follow in --follow mode (0 means unlimited in list mode and no initial rows in --follow mode)" default:"0"`
-	Follow   bool     `name:"follow" short:"F" help:"Follow command events"`
-	Tree     bool     `name:"tree" help:"Print command lineage as a tree"`
-	Output   string   `name:"output" short:"o" help:"Output format: text,json,csv (default: text)"`
-	Version  bool     `name:"version" help:"Show version and build info"`
+	Input      string   `name:"input" short:"i" help:"Read log file path (default: /var/log/prec/prec.log)"`
+	AllLogs    bool     `name:"all-logs" short:"a" help:"Read current and rotated log files together in list mode and follow initial output"`
+	Source     string   `name:"source" short:"s" help:"Select source: user,system,any (default: user)" default:"user"`
+	Query      []string `name:"query" short:"q" help:"Filter expression, repeatable. Clause format: key op value, op is = != > >= < <= ~= !~=. Use && for AND, || for OR"`
+	Fields     string   `name:"fields" short:"f" help:"Select output fields, comma-separated. Use + to add and - to remove. Supported:\nall,timestamp,end_timestamp,event_id,user,group,\ncommand,uid,gid,auid,session_id,pid,ppid,comm,\nexe,cwd,argv,argc,cgroup,tty,tty_nr,source,\nrecord_type,exit_status,duration_ns,duration,\nexec_errno,exec_error,lost_samples,\nlost_samples_total,parent_comm,parent_exe,\nparent_cmdline,parent_tty,parent_tty_nr,\nfile_path,file_fd,file_bytes,file_flags,\nfile_dev,file_ino"`
+	FullTime   bool     `name:"full-time" help:"Print full RFC3339Nano timestamp"`
+	Limit      int      `name:"limit" short:"n" help:"Max rows in list mode; initial rows before follow in --follow mode (0 means unlimited in list mode and no initial rows in --follow mode)" default:"0"`
+	Follow     bool     `name:"follow" short:"F" help:"Follow command events"`
+	FileEvents bool     `name:"file-events" help:"Include file events in CLI output"`
+	Tree       bool     `name:"tree" help:"Print command lineage as a tree"`
+	Output     string   `name:"output" short:"o" help:"Output format: text,json,csv (default: text)"`
+	Version    bool     `name:"version" help:"Show version and build info"`
 }
 
 func Run(args []string, version string) int {
@@ -99,17 +101,19 @@ func Run(args []string, version string) int {
 
 	if cli.Follow {
 		return runTail(logPath, compressionHint, logPaths, cli.AllLogs, cli.Limit, lf, outputOptions{
-			tree:     false,
-			fullTime: cli.FullTime,
-			format:   outputFormat,
-			fields:   selectedFields,
+			tree:       false,
+			fullTime:   cli.FullTime,
+			format:     outputFormat,
+			fields:     selectedFields,
+			fileEvents: cli.FileEvents,
 		})
 	}
 	return runList(logPaths, cli.Limit, lf, outputOptions{
-		tree:     cli.Tree && outputFormat == outputFormatText,
-		fullTime: cli.FullTime,
-		format:   outputFormat,
-		fields:   selectedFields,
+		tree:       cli.Tree && outputFormat == outputFormatText,
+		fullTime:   cli.FullTime,
+		format:     outputFormat,
+		fields:     selectedFields,
+		fileEvents: cli.FileEvents,
 	})
 }
 
@@ -135,6 +139,14 @@ func resolveInputLogPath(configPath string, inputPath string) (string, error) {
 
 func effectiveQuerySpecs(cli rootCLI) []string {
 	specs := append([]string(nil), cli.Query...)
+	switch {
+	case !cli.FileEvents:
+		// Keep the default CLI view process-focused even when daemon logs contain file activity.
+		specs = append([]string{"record_type=proc_command||record_type=proc_fail||record_type=proc_loss"}, specs...)
+	case !hasRecordTypeQuery(specs):
+		// Keep file-event mode save-focused by default while still showing process results.
+		specs = append([]string{"record_type=proc_command||record_type=proc_fail||record_type=proc_loss||record_type=file_save"}, specs...)
+	}
 	switch normalizeSource(cli.Source) {
 	case "any":
 		return specs
@@ -147,6 +159,15 @@ func effectiveQuerySpecs(cli rootCLI) []string {
 	}
 }
 
+func hasRecordTypeQuery(specs []string) bool {
+	for _, spec := range specs {
+		if query.SpecHasKey(spec, "record_type") {
+			return true
+		}
+	}
+	return false
+}
+
 func validateModeFlags(cli rootCLI) error {
 	if !isSupportedOutputFormat(normalizeOutputFormat(cli.Output)) {
 		return fmt.Errorf("invalid --output value: %s", cli.Output)
@@ -156,6 +177,9 @@ func validateModeFlags(cli rootCLI) error {
 	}
 	if cli.Follow && cli.Tree {
 		return errors.New("--tree cannot be used with --follow (-F)")
+	}
+	if cli.Tree && cli.FileEvents {
+		return errors.New("--tree cannot be used with --file-events")
 	}
 	if cli.Limit < 0 {
 		return errors.New("--limit must be 0 or greater")

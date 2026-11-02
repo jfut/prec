@@ -16,6 +16,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/jfut/prec/internal/config"
+	"github.com/jfut/prec/internal/events"
 )
 
 func TestValidateModeFlags(t *testing.T) {
@@ -52,6 +53,11 @@ func TestValidateModeFlags(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "file events and tree conflict",
+			cli:     rootCLI{FileEvents: true, Tree: true, Limit: 1},
+			wantErr: true,
+		},
+		{
 			name:    "invalid limit",
 			cli:     rootCLI{Limit: -1},
 			wantErr: true,
@@ -80,6 +86,39 @@ func TestValidateModeFlags(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestEffectiveQuerySpecsExcludeFileEventsByDefault(t *testing.T) {
+	t.Parallel()
+
+	lf, err := buildQueryFilter(effectiveQuerySpecs(rootCLI{Source: "any"}))
+	if err != nil {
+		t.Fatalf("buildQueryFilter: %v", err)
+	}
+	if !matchFilter(events.CommandEvent{RecordType: events.RecordTypeCommand}, lf) {
+		t.Fatalf("proc_command should match default CLI filter")
+	}
+	if !matchFilter(events.CommandEvent{RecordType: events.RecordTypeFail}, lf) {
+		t.Fatalf("proc_fail should match default CLI filter")
+	}
+	if matchFilter(events.CommandEvent{RecordType: events.RecordTypeFileSave}, lf) {
+		t.Fatalf("file_save must be hidden unless --file-events is set")
+	}
+}
+
+func TestEffectiveQuerySpecsIncludeFileEventsWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	lf, err := buildQueryFilter(effectiveQuerySpecs(rootCLI{Source: "any", FileEvents: true}))
+	if err != nil {
+		t.Fatalf("buildQueryFilter: %v", err)
+	}
+	if !matchFilter(events.CommandEvent{RecordType: events.RecordTypeFileSave}, lf) {
+		t.Fatalf("file_save should match when --file-events is set")
+	}
+	if matchFilter(events.CommandEvent{RecordType: events.RecordTypeFileOpen}, lf) {
+		t.Fatalf("file_open should be hidden by default in --file-events mode")
 	}
 }
 
@@ -122,6 +161,7 @@ func TestRunVersionOutput(t *testing.T) {
 func TestEffectiveQuerySpecs(t *testing.T) {
 	t.Parallel()
 
+	const processRecordTypes = "record_type=proc_command||record_type=proc_fail||record_type=proc_loss"
 	tests := []struct {
 		name string
 		cli  rootCLI
@@ -130,42 +170,57 @@ func TestEffectiveQuerySpecs(t *testing.T) {
 		{
 			name: "default applies user source filter",
 			cli:  rootCLI{},
-			want: []string{"source=user"},
+			want: []string{"source=user", processRecordTypes},
 		},
 		{
 			name: "source any disables default source filter",
 			cli:  rootCLI{Source: "any"},
-			want: nil,
+			want: []string{processRecordTypes},
 		},
 		{
 			name: "source system applies system source filter",
 			cli:  rootCLI{Source: "system"},
-			want: []string{"source=system"},
+			want: []string{"source=system", processRecordTypes},
 		},
 		{
 			name: "implicit source user is added when query has no source",
 			cli:  rootCLI{Query: []string{"uid>=1000"}},
-			want: []string{"source=user", "uid>=1000"},
+			want: []string{"source=user", processRecordTypes, "uid>=1000"},
 		},
 		{
 			name: "source any keeps explicit query unchanged",
 			cli:  rootCLI{Source: "any", Query: []string{"source=system"}},
-			want: []string{"source=system"},
+			want: []string{processRecordTypes, "source=system"},
 		},
 		{
 			name: "default source user is added before explicit source query",
 			cli:  rootCLI{Query: []string{"uid>=1000", "source=system"}},
-			want: []string{"source=user", "uid>=1000", "source=system"},
+			want: []string{"source=user", processRecordTypes, "uid>=1000", "source=system"},
 		},
 		{
 			name: "source query in and clause still gets default source user",
 			cli:  rootCLI{Query: []string{"uid>=1000&&source=user"}},
-			want: []string{"source=user", "uid>=1000&&source=user"},
+			want: []string{"source=user", processRecordTypes, "uid>=1000&&source=user"},
 		},
 		{
 			name: "source query in or expression still gets default source user",
 			cli:  rootCLI{Query: []string{"uid>=1000||source=system"}},
-			want: []string{"source=user", "uid>=1000||source=system"},
+			want: []string{"source=user", processRecordTypes, "uid>=1000||source=system"},
+		},
+		{
+			name: "file events keeps explicit query unchanged",
+			cli:  rootCLI{Source: "any", FileEvents: true, Query: []string{"record_type=file_save"}},
+			want: []string{"record_type=file_save"},
+		},
+		{
+			name: "file events default to file save records",
+			cli:  rootCLI{Source: "any", FileEvents: true},
+			want: []string{"record_type=proc_command||record_type=proc_fail||record_type=proc_loss||record_type=file_save"},
+		},
+		{
+			name: "file events explicit record type keeps file open query",
+			cli:  rootCLI{Source: "any", FileEvents: true, Query: []string{"record_type=file_open"}},
+			want: []string{"record_type=file_open"},
 		},
 	}
 
@@ -223,6 +278,9 @@ func TestRunHelpFieldsFlagHasExplicitLineBreak(t *testing.T) {
 	// Help formatter inserts indentation after explicit line breaks, so allow spaces.
 	if !regexp.MustCompile(`exec_errno,exec_error,lost_samples,\n\s+lost_samples_total`).MatchString(got) {
 		t.Fatalf("fields middle line break not found in help output:\n%s", got)
+	}
+	if !strings.Contains(got, "file_path,file_fd,file_bytes,file_flags") {
+		t.Fatalf("file fields list not found in help output:\n%s", got)
 	}
 	// Verify help line width is clamped to the configured terminal baseline.
 	for _, line := range strings.Split(got, "\n") {

@@ -92,6 +92,90 @@ func TestClassifyCommandSource(t *testing.T) {
 	})
 }
 
+func TestClassifyFileEventSource(t *testing.T) {
+	t.Parallel()
+
+	t.Run("interactive shell self is user", func(t *testing.T) {
+		t.Parallel()
+		ev := CommandEvent{
+			Source: SourceSystem,
+			Comm:   "bash",
+			Exe:    "/usr/bin/bash",
+			TTY:    "/dev/pts/0",
+		}
+		if got := ClassifyFileEventSource(ev); got != SourceUser {
+			t.Fatalf("unexpected source: %s", got)
+		}
+	})
+
+	t.Run("existing user source stays user", func(t *testing.T) {
+		t.Parallel()
+		ev := CommandEvent{Source: SourceUser, Comm: "tee", Exe: "/usr/bin/tee"}
+		if got := ClassifyFileEventSource(ev); got != SourceUser {
+			t.Fatalf("unexpected source: %s", got)
+		}
+	})
+
+	t.Run("non shell stays system", func(t *testing.T) {
+		t.Parallel()
+		ev := CommandEvent{
+			Source: SourceSystem,
+			Comm:   "python",
+			Exe:    "/usr/bin/python3",
+			TTY:    "/dev/pts/0",
+		}
+		if got := ClassifyFileEventSource(ev); got != SourceSystem {
+			t.Fatalf("unexpected source: %s", got)
+		}
+	})
+
+	t.Run("non interactive user shell self is user", func(t *testing.T) {
+		t.Parallel()
+		ev := CommandEvent{
+			Source: SourceSystem,
+			UID:    1000,
+			Comm:   "bash",
+			Exe:    "/usr/bin/bash",
+		}
+		if got := ClassifyFileEventSource(ev); got != SourceUser {
+			t.Fatalf("unexpected source: %s", got)
+		}
+	})
+
+	t.Run("child process from interactive user shell is user", func(t *testing.T) {
+		t.Parallel()
+		ev := CommandEvent{
+			Source:     SourceSystem,
+			UID:        1000,
+			Comm:       "python3",
+			Exe:        "/usr/bin/python3",
+			ParentComm: "bash",
+			ParentExe:  "/usr/bin/bash",
+			ParentTTY:  "/dev/pts/0",
+		}
+		if got := ClassifyFileEventSource(ev); got != SourceUser {
+			t.Fatalf("unexpected source: %s", got)
+		}
+	})
+
+	t.Run("vscode remote ssh file event is user", func(t *testing.T) {
+		t.Parallel()
+		ev := CommandEvent{
+			Source:        SourceSystem,
+			UID:           1000,
+			Comm:          "node",
+			Exe:           "/home/dev/.vscode-server/bin/xxx/node",
+			Argv:          []string{"/home/dev/.vscode-server/bin/xxx/node", "--type=extensionHost"},
+			ParentComm:    "node",
+			ParentExe:     "/home/dev/.vscode-server/bin/xxx/node",
+			ParentCmdline: "/home/dev/.vscode-server/bin/xxx/node ... --connection-token=remotessh --start-server",
+		}
+		if got := ClassifyFileEventSource(ev); got != SourceUser {
+			t.Fatalf("unexpected source: %s", got)
+		}
+	})
+}
+
 func TestIsInteractiveTTY(t *testing.T) {
 	t.Parallel()
 

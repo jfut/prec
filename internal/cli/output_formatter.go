@@ -44,7 +44,16 @@ func (f structuredTextFormatter) Header() string {
 }
 
 func (f structuredTextFormatter) Format(ev events.CommandEvent) string {
-	return strings.Join(csvRecord(ev, outputOptions{fullTime: f.fullTime}, f.fields), " ")
+	values := csvRecord(ev, outputOptions{fullTime: f.fullTime}, f.fields)
+	compact := values[:0]
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		compact = append(compact, value)
+	}
+	// Omit empty optional fields so human-readable text always uses one separator.
+	return strings.Join(compact, " ")
 }
 
 type jsonFormatter struct {
@@ -91,6 +100,9 @@ func newOutputFormatter(opt outputOptions) outputFormatter {
 		return csvFormatter{fullTime: opt.fullTime, fields: fields}
 	default:
 		if len(opt.fields) > 0 {
+			return structuredTextFormatter{fullTime: opt.fullTime, fields: fields}
+		}
+		if opt.fileEvents {
 			return structuredTextFormatter{fullTime: opt.fullTime, fields: fields}
 		}
 		return simpleTextFormatter{fullTime: opt.fullTime}
@@ -254,7 +266,12 @@ func csvRecord(ev events.CommandEvent, opt outputOptions, fields []string) []str
 func jsonRecord(ev events.CommandEvent, opt outputOptions, fields []string) map[string]any {
 	record := make(map[string]any, len(fields))
 	for _, field := range fields {
-		record[field] = outputFieldValue(field, ev, opt.fullTime)
+		value := outputFieldValue(field, ev, opt.fullTime)
+		if value == nil || (field == "file_path" && value == "") {
+			// Sparse JSON avoids adding unrelated file fields to process records.
+			continue
+		}
+		record[field] = value
 	}
 	return record
 }
@@ -407,7 +424,13 @@ func isSupportedOutputField(field string) bool {
 		"parent_exe",
 		"parent_cmdline",
 		"parent_tty",
-		"parent_tty_nr":
+		"parent_tty_nr",
+		"file_path",
+		"file_fd",
+		"file_bytes",
+		"file_flags",
+		"file_dev",
+		"file_ino":
 		return true
 	default:
 		return false
@@ -528,6 +551,33 @@ func outputFieldValue(field string, ev events.CommandEvent, fullTime bool) any {
 		return ev.ParentTTY
 	case "parent_tty_nr":
 		return ev.ParentTTYNr
+	case "file_path":
+		return ev.FilePath
+	case "file_fd":
+		if ev.FileFD == nil {
+			return nil
+		}
+		return *ev.FileFD
+	case "file_bytes":
+		if ev.FileBytes == nil {
+			return nil
+		}
+		return *ev.FileBytes
+	case "file_flags":
+		if ev.FileFlags == nil {
+			return nil
+		}
+		return *ev.FileFlags
+	case "file_dev":
+		if ev.FileDev == nil {
+			return nil
+		}
+		return *ev.FileDev
+	case "file_ino":
+		if ev.FileIno == nil {
+			return nil
+		}
+		return *ev.FileIno
 	default:
 		return ""
 	}
@@ -539,7 +589,7 @@ func resolveStructuredOutputFields(opt outputOptions) []string {
 		copy(out, opt.fields)
 		return out
 	}
-	return defaultOutputFields()
+	return defaultOutputFieldsForMode(opt.fileEvents)
 }
 
 func requiresCommandEndProcessing(lf listFilter, opt outputOptions) bool {
@@ -565,6 +615,13 @@ func isFinalizedOnlyOutputField(field string) bool {
 
 func defaultOutputFields() []string {
 	return []string{"timestamp", "user", "group", "command"}
+}
+
+func defaultOutputFieldsForMode(fileEvents bool) []string {
+	if fileEvents {
+		return []string{"timestamp", "user", "group", "record_type", "file_path", "file_fd", "file_bytes", "command"}
+	}
+	return defaultOutputFields()
 }
 
 func allOutputFields() []string {
@@ -603,6 +660,12 @@ func allOutputFields() []string {
 		"parent_cmdline",
 		"parent_tty",
 		"parent_tty_nr",
+		"file_path",
+		"file_fd",
+		"file_bytes",
+		"file_flags",
+		"file_dev",
+		"file_ino",
 	}
 }
 

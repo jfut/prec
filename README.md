@@ -18,7 +18,7 @@ Implementation note:
 - Logs execution traces of `Local Privilege Escalation: LPE` attacks that are often missing from application logs
 - Host-side `precd` also logs commands executed inside `docker`, `runc`, and other containers on the same host
 - Supports `audit` workflows with searchable records of who ran what, when, where, and with which result
-- Supports `forensic` investigations by reconstructing execution timelines from `start`, `end`, and `fail` records
+- Supports `forensic` investigations by reconstructing execution timelines from `proc_start`, `proc_end`, and `proc_fail` records
 
 ## Comparison with auditd
 
@@ -26,28 +26,38 @@ Implementation note:
 
 - `prec` is focused on command visibility and quick inspection by humans
 - `prec` outputs normalized command-centric records directly
-- `prec` focuses on command execution records and includes `exit_status` and `fail`
+- `prec` focuses on command execution records and includes `exit_status` and `proc_fail`
 - `prec` can also be used for forensic investigation by reconstructing execution timelines from structured records
 
 In practice, `prec` is designed for command-focused monitoring and forensic use cases. It can replace parts of `auditd` workflows that only require command execution visibility, and can also be deployed together with `auditd`.
 
 ## Scope and limits
 
-- Target is external commands only
+- Target is external commands and selected regular file activity
 - Shell builtins such as `cd`, `export`, and `alias` are not captured
-- Non-exec activities are out of scope unless they invoke external commands
-- Broad host auditing needs such as full syscall, file access, or network auditing are out of scope
+- File monitoring covers successful write-family operations and, when explicitly bounded by `capture_filter`, read-only opens to regular files
+- Broad host auditing needs such as full syscall or network auditing are out of scope
 
 ## Recorded fields
 
 Raw log records from `precd`:
 
-- `record_type=start`
-- `record_type=end`
-- `record_type=fail`
-- `record_type=loss`
+- `record_type=proc_start`
+- `record_type=proc_end`
+- `record_type=proc_fail`
+- `record_type=proc_loss`
+- `record_type=file_open`
+- `record_type=file_save`
 
-`start` fields:
+Merged `record_type` values from `prec`:
+
+- `record_type=proc_command`
+- `record_type=proc_fail`
+- `record_type=proc_loss`
+- `record_type=file_open`
+- `record_type=file_save`
+
+`proc_start` fields:
 
 - `timestamp`, `event_id`
 - `uid`, `gid`, `user`, `group`
@@ -58,18 +68,22 @@ Raw log records from `precd`:
 - `source`
 - `parent_comm`, `parent_exe`, `parent_cmdline`, `parent_tty`, `parent_tty_nr`
 
-`end` fields (compact):
+`proc_end` fields (compact):
 
 - `timestamp` (end time), `event_id`, `pid`
 - `duration_ns`
 - `exit_status`
 - `source`
-- unrelated start-only fields are omitted from `end` JSON records
+- unrelated proc_start-only fields are omitted from `proc_end` JSON records
 
-`fail` and `loss` additional fields:
+`proc_fail` and `proc_loss` additional fields:
 
-- `fail`: `exec_errno`, `exec_error`
-- `loss`: `lost_samples`, `lost_samples_total`
+- `proc_fail`: `exec_errno`, `exec_error`
+- `proc_loss`: `lost_samples`, `lost_samples_total`
+
+file event additional fields:
+
+- `file_path`, `file_fd`, `file_bytes`, `file_flags`, `file_dev`, `file_ino`
 
 Notes:
 
@@ -78,10 +92,22 @@ Notes:
 - `auid` and `session_id` are read from `/proc/<pid>/loginuid` and `/proc/<pid>/sessionid`
 - `timestamp` is derived from kernel monotonic time and converted to RFC3339Nano in userspace
 - `exit_status` is the shell-visible status code range `0-255`
-- `start` is written immediately after exec succeeds
-- `end` is written when the process exits
-- `fail` records are written when `execve` or `execveat` returns an error
-- `loss` records are written when the perf ring reports dropped samples
+- `proc_start` is written immediately after exec succeeds
+- `proc_end` is written when the process exits
+- `proc_fail` records are written when `execve` or `execveat` returns an error
+- `proc_loss` records are written when the perf ring reports dropped samples
+- repeated `proc_loss` notifications are aggregated and logged at most once per second
+- file activity is collected from the `openat` and write-family syscall tracepoints such as `write`, `pwrite64`, `writev`, `pwritev`, and `pwritev2`
+- file activity collection is disabled by default and starts only when `collect_file_open = true` or `collect_file_save = true` is set in `precd.conf`
+- by default, file activity records only `source=user` operations; use `collect_file_source` to switch the target scope
+- `file_open` is emitted for successful `openat` calls to regular files with write-capable intent such as `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND`, or `O_EXCL`
+- read-only `file_open` records are also emitted when `collect_file_open = true` and a non-empty `capture_filter` is configured; the early filter is required to prevent perf-ring overload
+- `file_save` is emitted only when the write-family target is a regular file
+- `file_dev` and `file_ino` identify the device and inode observed for the regular-file target
+- `precd` self-writes to its own `log_path` are excluded to reduce collector noise
+- repeated `file_save` events from the same process to the same file are suppressed within `file_save_dedup_sec` seconds (default: 1)
+- `collect_file_scope = "user_visible"` is the default and keeps user-visible files while excluding common hidden app-state paths and deleted temp files
+- the log writer syncs data approximately once per second during operation and also syncs during close and log rotation
 
 ## Source classification
 
@@ -90,6 +116,9 @@ Notes:
 - command has an interactive tty (`/dev/pts/*` or `/dev/tty`, or `tty_nr != 0` fallback).
   If child tty data is unavailable, parent tty is used as fallback
 - immediate parent process is a shell
+- for file events, child processes launched from an interactive user shell are also treated as `user`
+- for file events, non-interactive user shell builtins are also treated as `user`
+- for file events, VS Code Remote SSH user processes such as `.vscode-server` `node` / extension host are also treated as `user`
 
 Everything else is `source=system`.
 
@@ -205,11 +234,50 @@ Compression modes:
 - `compress = "gz"` gzip-compressed JSONL stream
 - `compress = "zstd"` zstd-compressed JSONL stream (default)
 
+File save dedup:
+
+- `collect_file_open = true` enables `openat` syscall tracing for `file_open`
+- with a non-empty `capture_filter`, `collect_file_open = true` also captures matching read-only opens; keep the filter narrow, for example by UID, GID, or `comm`
+- `collect_file_save = true` enables write-family syscall tracing and emits `file_save` records
+- `collect_file_source = "user"` records only user-originated file activity (default)
+- `collect_file_source = "system"` records only system or daemon file activity
+- `collect_file_source = "any"` records both user and system file activity
+- `collect_file_scope = "user_visible"` records user-visible files and excludes common hidden app-state paths (default)
+- `collect_file_scope = "home"` records all files under the user's home directory
+- `collect_file_scope = "all"` records all tracked regular-file paths
+- `file_save_dedup_sec = 1` suppress repeated `file_save` records for the same `pid` and `file_path` within the configured window
+- `file_save_dedup_sec = 0` disables this suppression
+
+Early capture filter:
+
+- `capture_filter` is an optional positive allowlist evaluated in eBPF before events are sent to the perf ring
+- rules and `||` terms are ORed; `&&` clauses within a term are ANDed
+- every rule must start with `+`; a matching event is captured and a non-matching event is dropped
+- supported fields are `uid`, `gid`, `pid`, `user`, `group`, and exact `comm` matches
+- `user` and `group` names are resolved to UID/GID when `precd` starts
+- numeric fields support `=`, `!=`, `>`, `>=`, `<`, and `<=`; `user`, `group`, and `comm` support `=` and `!=`
+- fields that require event data unavailable at the tracepoint, such as `exe`, `argv`, `file_path`, `record_type`, and `source`, are rejected at startup
+- `capture_filter` is a coarse prefilter for reducing kernel and perf-ring load; `filter` remains the final user-space filter
+
+Example:
+
+```toml
+# Capture events from interactive users and selected web-server workers.
+collect_file_open = true
+collect_file_source = "any"
+capture_filter = [
+  "+uid>=1000",
+  "+user=apache",
+  "+user=nginx",
+  "+comm=php-fpm",
+]
+```
+
 Lost sample actions:
 
-- `lost_samples_action = "log"` write `loss` records (default)
-- `lost_samples_action = "ignore"` skip `loss` records
-- `lost_samples_action = "stop"` write one `loss` record and stop `precd`
+- `lost_samples_action = "log"` write `proc_loss` records (default)
+- `lost_samples_action = "ignore"` skip `proc_loss` records
+- `lost_samples_action = "stop"` write one `proc_loss` record and stop `precd`
 
 Filter rules:
 
@@ -227,7 +295,13 @@ Filter rules:
 - `prec` without options is equivalent to applying `--source user`
 - `prec` with `--query` also applies the selected `--source` filter unless `--source any` is specified
 - Default output fields are `timestamp user group command`
-- `prec` joins `start` and `end` by `event_id` and shows one logical `record_type=command`
+- Default output fields with `--file-events` are `timestamp user group record_type file_path file_fd file_bytes command`
+- human-readable text omits empty optional fields, and JSON omits unavailable file-specific fields from process records
+- `prec` joins `proc_start` and `proc_end` by `event_id` and shows one logical `record_type=proc_command`
+- file records are hidden by default; use `--file-events` to include them
+- file records are not merged and are shown as independent rows when `--file-events` is set
+- `--file-events` shows `file_save` records by default; use `--query "record_type=file_open"` when open intent is needed
+- `--tree` cannot be used with `--file-events`
 
 ### Usage
 
@@ -264,12 +338,16 @@ Flags:
                            record_type,exit_status,duration_ns,duration,
                            exec_errno,exec_error,lost_samples,
                            lost_samples_total,parent_comm,parent_exe,
-                           parent_cmdline,parent_tty,parent_tty_nr
+                           parent_cmdline,parent_tty,parent_tty_nr,
+                           file_path,file_fd,file_bytes,file_flags,
+                           file_dev,file_ino
       --full-time          Print full RFC3339Nano timestamp
   -n, --limit=0            Max rows in list mode; initial rows before follow in
                            --follow mode (0 means unlimited in list mode and no
                            initial rows in --follow mode)
   -F, --follow             Follow command events
+      --file-events        Include file events in CLI output
+                           (requires `collect_file_open = true` and/or `collect_file_save = true` in `precd`)
       --tree               Print command lineage as a tree
   -o, --output=STRING      Output format: text,json,csv (default: text)
       --version            Show version and build info
@@ -282,11 +360,12 @@ Flags:
 
 Follow mode semantics:
 
-- when `start` arrives, `prec` prints a provisional merged row
-- `prec` processes `end` only when finalized fields are needed by output or query
+- when `proc_start` arrives, `prec` prints a provisional merged row
+- `prec` processes `proc_end` only when finalized fields are needed by output or query
   - output fields: `end_timestamp`, `duration_ns`, `duration`, `exit_status`
   - query keys: `end_timestamp`, `duration_ns`, `duration`, `exit_status`
-- when `end` is processed, `prec` prints another row for the same `event_id` with finalized values and then releases in-memory join state
+- when `proc_end` is processed, `prec` prints another row for the same `event_id` with finalized values and then releases in-memory join state
+- file save records are streamed as-is with `--file-events` and do not require proc_start/proc_end join processing
 
 ### Core options
 
@@ -337,9 +416,10 @@ Rules:
 - `||` is OR operator
 - AND has higher precedence than OR
 - repeated `--query` is AND at top level
-- `source` value in `--query` must be `user` or `system`
-- in `prec` merged output, `record_type` is effectively `command`, `fail`, or `loss`
-- query parser also accepts `start` and `end` as raw log record types
+- `source` value must be `user` or `system`
+- `record_type` values in `prec` query match displayed rows: `proc_command`, `proc_fail`, `proc_loss`, `file_open`, or `file_save`
+- file `record_type` queries require `--file-events`; otherwise file records are excluded before user queries are applied
+- raw log-only record types such as `proc_start` and `proc_end` are joined before filtering and are not accepted as query values
 - string match is case-sensitive
 - `timestamp` and `end_timestamp` accept RFC3339 or RFC3339Nano
 - `duration` accepts `YYYY-MM-DD HH:MM:SS` and means elapsed `year-month-day hour:minute:second`
@@ -356,7 +436,7 @@ Supported query keys:
 Type rules:
 
 - numeric/timestamp/duration typed keys keep strict operators:
-  - numeric: `uid`, `gid`, `auid`, `session_id`, `pid`, `ppid`, `argc`, `tty_nr`, `exit_status`, `duration_ns`, `exec_errno`, `lost_samples`, `lost_samples_total`, `parent_tty_nr`
+  - numeric: `uid`, `gid`, `auid`, `session_id`, `pid`, `ppid`, `argc`, `tty_nr`, `exit_status`, `duration_ns`, `exec_errno`, `lost_samples`, `lost_samples_total`, `parent_tty_nr`, `file_fd`, `file_bytes`, `file_flags`, `file_dev`, `file_ino`
   - timestamp: `timestamp`, `end_timestamp`
   - duration: `duration`
 - array key: `argv` is string-matched as joined text
@@ -372,6 +452,7 @@ Supported fields:
 - `comm`, `exe`, `cwd`, `argv`, `argc`
 - `cgroup`, `tty`, `tty_nr`, `source`, `record_type`, `exit_status`, `duration_ns`, `duration`, `exec_errno`, `exec_error`, `lost_samples`, `lost_samples_total`
 - `parent_comm`, `parent_exe`, `parent_cmdline`, `parent_tty`, `parent_tty_nr`
+- `file_path`, `file_fd`, `file_bytes`, `file_flags`, `file_dev`, `file_ino`
 
 Selection rules:
 
@@ -384,9 +465,11 @@ Examples:
 
 - `-f timestamp,uid,gid,group,command`
 - `-f +uid,gid,group,-timestamp,user`
-- `-f all,-end_timestamp,event_id,duration_ns,duration,cgroup,tty,tty_nr,source,parent_comm,parent_exe,parent_cmdline,parent_tty,parent_tty_nr`
-- `prec -s any --query "record_type=loss" -f timestamp,record_type,lost_samples,lost_samples_total`
-- `prec -s any --query "record_type=fail" -f timestamp,auid,session_id,exe,exec_errno,exec_error`
+- `-f all,-end_timestamp,event_id,duration_ns,duration,cgroup,tty,tty_nr,source,parent_comm,parent_exe,parent_cmdline,parent_tty,parent_tty_nr,file_path,file_fd,file_bytes,file_flags,file_dev,file_ino`
+- `prec -s any --query "record_type=proc_loss" -f timestamp,record_type,lost_samples,lost_samples_total`
+- `prec -s any --query "record_type=proc_fail" -f timestamp,auid,session_id,exe,exec_errno,exec_error`
+- `prec --file-events -s any --query "record_type=file_open" -f timestamp,user,record_type,file_path,file_fd,file_flags`
+- `prec --file-events -s any --query "record_type=file_save&&file_bytes>=4096" -f timestamp,user,record_type,file_path,file_fd,file_bytes`
 
 ## Quick examples
 

@@ -25,11 +25,29 @@ func TestLoadDefaultWhenMissing(t *testing.T) {
 	if cfg.CompressLevel != DefaultZstdCompressLevel {
 		t.Fatalf("unexpected compress_level: %d", cfg.CompressLevel)
 	}
+	if cfg.CollectFileOpen {
+		t.Fatalf("unexpected collect_file_open: %+v", cfg.CollectFileOpen)
+	}
+	if cfg.CollectFileSave {
+		t.Fatalf("unexpected collect_file_save: %+v", cfg.CollectFileSave)
+	}
+	if cfg.CollectFileSource != "user" {
+		t.Fatalf("unexpected collect_file_source: %s", cfg.CollectFileSource)
+	}
+	if cfg.CollectFileScope != "user_visible" {
+		t.Fatalf("unexpected collect_file_scope: %s", cfg.CollectFileScope)
+	}
+	if cfg.FileSaveDedupSec != 1 {
+		t.Fatalf("unexpected file_save_dedup_sec: %d", cfg.FileSaveDedupSec)
+	}
 	if cfg.FilterDefault != "allow" {
 		t.Fatalf("unexpected filter_default: %s", cfg.FilterDefault)
 	}
 	if len(cfg.Filter) != 0 {
 		t.Fatalf("unexpected filter rules: %+v", cfg.Filter)
+	}
+	if len(cfg.CaptureFilter) != 0 {
+		t.Fatalf("unexpected capture_filter rules: %+v", cfg.CaptureFilter)
 	}
 	if cfg.LostSamplesAction != LostSamplesActionLog {
 		t.Fatalf("unexpected lost_samples_action: %s", cfg.LostSamplesAction)
@@ -47,8 +65,14 @@ func TestLoadFromTOML(t *testing.T) {
 	if err := os.WriteFile(p, []byte(`log_path = "/tmp/x.log"
 compress = "zstd"
 compress_level = 7
+collect_file_open = true
+collect_file_save = true
+collect_file_source = "any"
+collect_file_scope = "all"
+file_save_dedup_sec = 3
 filter_default = "deny"
 filter = ["-exe~=apt", "+source=user&&uid>=1000"]
+capture_filter = ["+uid>=1000", "+comm=php-fpm"]
 user_only = true
 lost_samples_action = "stop"
 max_arg_length = 100
@@ -70,6 +94,21 @@ max_args = 10
 	if cfg.CompressLevel != 7 {
 		t.Fatalf("unexpected compress_level: %d", cfg.CompressLevel)
 	}
+	if !cfg.CollectFileOpen {
+		t.Fatalf("unexpected collect_file_open: %+v", cfg.CollectFileOpen)
+	}
+	if !cfg.CollectFileSave {
+		t.Fatalf("unexpected collect_file_save: %+v", cfg.CollectFileSave)
+	}
+	if cfg.CollectFileSource != "any" {
+		t.Fatalf("unexpected collect_file_source: %s", cfg.CollectFileSource)
+	}
+	if cfg.CollectFileScope != "all" {
+		t.Fatalf("unexpected collect_file_scope: %s", cfg.CollectFileScope)
+	}
+	if cfg.FileSaveDedupSec != 3 {
+		t.Fatalf("unexpected file_save_dedup_sec: %d", cfg.FileSaveDedupSec)
+	}
 	if cfg.FilterDefault != "deny" {
 		t.Fatalf("unexpected filter_default: %s", cfg.FilterDefault)
 	}
@@ -78,6 +117,9 @@ max_args = 10
 	}
 	if cfg.Filter[0] != "-exe~=apt" || cfg.Filter[1] != "+source=user&&uid>=1000" {
 		t.Fatalf("unexpected filter rules: %+v", cfg.Filter)
+	}
+	if len(cfg.CaptureFilter) != 2 || cfg.CaptureFilter[0] != "+uid>=1000" || cfg.CaptureFilter[1] != "+comm=php-fpm" {
+		t.Fatalf("unexpected capture_filter rules: %+v", cfg.CaptureFilter)
 	}
 	if cfg.LostSamplesAction != LostSamplesActionStop {
 		t.Fatalf("unexpected lost_samples_action: %s", cfg.LostSamplesAction)
@@ -111,6 +153,21 @@ func TestLoadFromEmptyTOML(t *testing.T) {
 	}
 	if cfg.CompressLevel != DefaultZstdCompressLevel {
 		t.Fatalf("unexpected compress_level: %d", cfg.CompressLevel)
+	}
+	if cfg.CollectFileOpen {
+		t.Fatalf("unexpected collect_file_open: %+v", cfg.CollectFileOpen)
+	}
+	if cfg.CollectFileSave {
+		t.Fatalf("unexpected collect_file_save: %+v", cfg.CollectFileSave)
+	}
+	if cfg.CollectFileSource != "user" {
+		t.Fatalf("unexpected collect_file_source: %s", cfg.CollectFileSource)
+	}
+	if cfg.CollectFileScope != "user_visible" {
+		t.Fatalf("unexpected collect_file_scope: %s", cfg.CollectFileScope)
+	}
+	if cfg.FileSaveDedupSec != 1 {
+		t.Fatalf("unexpected file_save_dedup_sec: %d", cfg.FileSaveDedupSec)
 	}
 	if cfg.FilterDefault != "allow" {
 		t.Fatalf("unexpected filter_default: %s", cfg.FilterDefault)
@@ -186,11 +243,9 @@ func TestLoadRejectLegacyFilterKeys(t *testing.T) {
 
 	d := t.TempDir()
 	p := filepath.Join(d, "legacy-filter.conf")
-	if err := os.WriteFile(p, []byte(`include_uids = [1000]
-`), 0o600); err != nil {
+	if err := os.WriteFile(p, []byte("include_uids = [1000]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
 	if _, err := Load(p); err == nil {
 		t.Fatalf("expected error for legacy filter key")
 	}
@@ -235,5 +290,35 @@ compress_level = 0
 				t.Fatalf("expected error for invalid compress_level")
 			}
 		})
+	}
+}
+
+func TestLoadRejectInvalidFileSaveDedupSec(t *testing.T) {
+	t.Parallel()
+
+	d := t.TempDir()
+	p := filepath.Join(d, "invalid-file-save-dedup-sec.conf")
+	if err := os.WriteFile(p, []byte(`file_save_dedup_sec = -1
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(p); err == nil {
+		t.Fatalf("expected error for invalid file_save_dedup_sec")
+	}
+}
+
+func TestLoadRejectInvalidCollectFileSource(t *testing.T) {
+	t.Parallel()
+
+	d := t.TempDir()
+	p := filepath.Join(d, "invalid-collect-file-source.conf")
+	if err := os.WriteFile(p, []byte(`collect_file_source = "robot"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(p); err == nil {
+		t.Fatalf("expected error for invalid collect_file_source")
 	}
 }
