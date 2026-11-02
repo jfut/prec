@@ -194,8 +194,8 @@ install -m 0755 dist/precd /usr/sbin/precd
 Install config and service files manually:
 
 ```bash
-mkdir -p /etc/prec
-chmod 750 /etc/prec
+mkdir -p /etc/prec/precd.d
+chmod 750 /etc/prec /etc/prec/precd.d
 install -m 0640 packaging/precd.conf.example /etc/prec/precd.conf
 
 mkdir -p /var/log/prec
@@ -222,6 +222,23 @@ systemctl status precd.service
 Default config path: `/etc/prec/precd.conf`
 
 See: [packaging/precd.conf.example](packaging/precd.conf.example)
+
+Additional configuration files:
+
+```toml
+include = "/etc/prec/precd.d/*.conf"
+```
+
+- configuration uses TOML, so the include path must be quoted
+- `include` accepts a single file path or glob pattern; relative paths are resolved from the including file's directory
+- the including file is applied first, then matching files in lexical filename order, regardless of where `include` appears in the file
+- included files may also use `include`; nested includes are applied before the next matching file
+- later scalar settings override earlier values, including explicit `false` and `0`
+- `filter = [...]` and `capture_filter = [...]` in included files append rules in load order instead of overwriting earlier rules; empty arrays add no rules and do not clear earlier rules
+- omitted settings retain their previous values; compression defaults and validation are applied after all files are merged
+- patterns with no matches are ignored, including nonexistent literal paths
+- invalid include patterns, unreadable or malformed included files, and include cycles cause loading to fail
+- the packaged configuration enables `/etc/prec/precd.d/*.conf`; restart `precd` after changing configuration
 
 Single-instance behavior:
 
@@ -251,6 +268,7 @@ File save dedup:
 Early capture filter:
 
 - `capture_filter` is an optional positive allowlist evaluated in eBPF before events are sent to the perf ring
+- `capture_filter = [...]` in an included file adds to the existing allowlist; `capture_filter = []` does not clear it
 - rules and `||` terms are ORed; `&&` clauses within a term are ANDed
 - every rule must start with `+`; a matching event is captured and a non-matching event is dropped
 - supported fields are `uid`, `gid`, `pid`, `user`, `group`, and exact `comm` matches
@@ -283,6 +301,8 @@ Filter rules:
 
 - `filter_default = "allow" | "deny"` controls events that match no rule
 - `filter = ["+query", "-query", ...]` uses ordered first-match evaluation
+- `filter = [...]` in an included file appends to existing rules; `filter = []` does not clear them
+- rules in the main configuration are evaluated before rules from included files, so an earlier matching rule takes precedence
 - each rule must start with `+` allow or `-` deny
 - query expression syntax is identical to `prec --query`
 - if a rule has no `+` or `-` prefix, `precd` fails to start

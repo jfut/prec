@@ -79,10 +79,10 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
 
-	// Load config from TOML in item_name = "value" format.
-	meta, err := toml.Decode(string(b), &cfg)
+	// Merge all included files before normalizing and validating runtime settings.
+	compressLevelDefined, err := loadConfig(path, b, &cfg, nil)
 	if err != nil {
-		return Config{}, fmt.Errorf("parse config: %w", err)
+		return Config{}, err
 	}
 
 	if cfg.LogPath == "" {
@@ -96,7 +96,7 @@ func Load(path string) (Config, error) {
 	if cfg.FilterDefault == "" {
 		cfg.FilterDefault = "allow"
 	}
-	if !meta.IsDefined("compress_level") {
+	if !compressLevelDefined {
 		cfg.CompressLevel = defaultCompressLevel(cfg.Compress)
 	}
 	cfg.LostSamplesAction = strings.ToLower(strings.TrimSpace(cfg.LostSamplesAction))
@@ -135,10 +135,6 @@ func Load(path string) (Config, error) {
 	if err := validateFilterDefault(cfg.FilterDefault); err != nil {
 		return Config{}, err
 	}
-	if err := validateLegacyFilterKeys(meta); err != nil {
-		return Config{}, err
-	}
-
 	return cfg, nil
 }
 

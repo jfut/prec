@@ -34,6 +34,8 @@
 
 # Early allowlist applied in eBPF before events reach the perf ring.
 # Rules and || terms are ORed. Each rule must start with + and clauses use && for AND.
+# Included files append capture_filter rules to earlier rules; they do not overwrite them.
+# capture_filter = [] adds no rules and does not clear earlier rules.
 # Supported fields: uid, gid, pid, user, group, comm (comm is exact match).
 # user/group names are resolved when precd starts.
 # Fields such as exe, argv, file_path, record_type, and source are not
@@ -68,6 +70,9 @@
 #   + to allow matched events
 #   - to deny matched events
 # Rules are evaluated from top to bottom. The first matched rule wins.
+# Included files append filter rules to earlier rules; they do not overwrite them.
+# filter = [] adds no rules and does not clear earlier rules.
+# Rules in this file are evaluated before rules from included files.
 # Query syntax follows prec --query.
 # Example:
 # filter = [
@@ -82,3 +87,8 @@
 
 # Maximum number of arguments to record.
 # max_args = 128
+
+# Load additional TOML files in filename order after this file.
+# Scalar settings override earlier values; filter and capture_filter rules append.
+# Relative paths are resolved from this file's directory; no matches are ignored.
+include = "/etc/prec/precd.d/*.conf"
