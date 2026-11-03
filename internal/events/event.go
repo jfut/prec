@@ -8,11 +8,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -65,9 +63,6 @@ type statusInfo struct {
 	PPID int
 	Name string
 }
-
-var userCache sync.Map
-var groupCache sync.Map
 
 func BuildFromPID(pid int, maxArgs int, maxArgLength int, exeHint string, kernelTimestamp string, eventID string) (CommandEvent, error) {
 	procDir := filepath.Join("/proc", strconv.Itoa(pid))
@@ -586,31 +581,9 @@ func int64Ptr(v int64) *int64 {
 }
 
 func lookupUser(uid uint32) string {
-	if v, ok := userCache.Load(uid); ok {
-		return v.(string)
-	}
-
-	u, err := user.LookupId(strconv.FormatUint(uint64(uid), 10))
-	if err != nil {
-		// Cache empty results too, to avoid repeated lookups for missing UIDs.
-		userCache.Store(uid, "")
-		return ""
-	}
-	userCache.Store(uid, u.Username)
-	return u.Username
+	return identityNames.user(uid)
 }
 
 func lookupGroup(gid uint32) string {
-	if v, ok := groupCache.Load(gid); ok {
-		return v.(string)
-	}
-
-	g, err := user.LookupGroupId(strconv.FormatUint(uint64(gid), 10))
-	if err != nil {
-		// Cache empty results too, to avoid repeated lookups for missing GIDs.
-		groupCache.Store(gid, "")
-		return ""
-	}
-	groupCache.Store(gid, g.Name)
-	return g.Name
+	return identityNames.group(gid)
 }

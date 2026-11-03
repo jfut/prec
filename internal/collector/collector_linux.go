@@ -156,7 +156,15 @@ type fileSaveDedupKey struct {
 	path string
 }
 
-var userHomeCache sync.Map
+var userHomeCaches atomic.Pointer[sync.Map]
+
+func currentUserHomeCache() *sync.Map {
+	if cache := userHomeCaches.Load(); cache != nil {
+		return cache
+	}
+	userHomeCaches.CompareAndSwap(nil, new(sync.Map))
+	return userHomeCaches.Load()
+}
 
 // Service handles eBPF event collection and JSONL writing.
 type Service struct {
@@ -302,6 +310,23 @@ func (s *Service) Run(stop <-chan struct{}) error {
 
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return fmt.Errorf("remove memlock: %w", err)
+	}
+
+	identities, refresher, err := newCaptureIdentityMap(s.capturePolicy)
+	if err != nil {
+		return fmt.Errorf("init capture_filter identities: %w", err)
+	}
+	if identities != nil {
+		defer func() { _ = identities.Close() }()
+		s.capturePolicy.identitiesMapFD = identities.FD()
+	}
+	if !s.capturePolicy.empty() {
+		processes, err := newCaptureProcessMap()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = processes.Close() }()
+		s.capturePolicy.processes = processes
 	}
 
 	eventsMap, err := ebpf.NewMap(&ebpf.MapSpec{
@@ -485,6 +510,11 @@ func (s *Service) Run(stop <-chan struct{}) error {
 	}
 	defer rd.Close()
 
+	if refresher != nil {
+		stopRefresh := refresher.start(stop, time.Duration(s.cfg.CaptureFilterRefreshSec)*time.Second)
+		defer stopRefresh()
+	}
+
 	go func() {
 		<-stop
 		_ = rd.Close()
@@ -614,23 +644,31 @@ func (s *Service) Run(stop <-chan struct{}) error {
 		case perfEventTypeExitStatus:
 			s.rememberExitStatus(tgid, int(rawStatus), false)
 		case perfEventTypeProcessExit:
-			// sched_process_exit is emitted per-thread. Finalize only when the thread-group leader exits.
-			if tid != tgid {
-				continue
-			}
-			s.dropExecAttemptsByTGID(tgid)
-			s.dropFileStateByTGID(tgid)
-			startEvent, status, startMonoNS, ok := s.finalizeEvent(tgid)
-			if !ok {
-				continue
-			}
-			durationNS := computeDurationNS(startMonoNS, kernelMonoNS)
-			endEvent := events.BuildCommandEndEvent(startEvent, timestamp, durationNS, status)
-			if err := s.writer.WriteEvent(endEvent); err != nil {
-				return fmt.Errorf("write command end event: %w", err)
+			if err := s.handleProcessExit(tgid, tid, kernelMonoNS, timestamp); err != nil {
+				return err
 			}
 		}
 	}
+}
+
+func (s *Service) handleProcessExit(tgid, tid int, kernelMonoNS uint64, timestamp string) error {
+	// Exit notifications for tracked processes remain valid after an identity
+	// refresh. Finalize cached starts and file state without reapplying filters.
+	if tid != tgid {
+		return nil
+	}
+	s.dropExecAttemptsByTGID(tgid)
+	s.dropFileStateByTGID(tgid)
+	startEvent, status, startMonoNS, ok := s.finalizeEvent(tgid)
+	if !ok {
+		return nil
+	}
+	durationNS := computeDurationNS(startMonoNS, kernelMonoNS)
+	endEvent := events.BuildCommandEndEvent(startEvent, timestamp, durationNS, status)
+	if err := s.writer.WriteEvent(endEvent); err != nil {
+		return fmt.Errorf("write command end event: %w", err)
+	}
+	return nil
 }
 
 type closeFunc func()
@@ -954,8 +992,8 @@ func buildExecTraceInstructions(eventsMapFD int, filenameDataLocOffset int16, po
 }
 
 func buildExitStatusTraceInstructions(eventsMapFD int, exitCodeOffset int16, exitCodeSize asm.Size, eventType int, policy capturePolicy) asm.Instructions {
-	instructions := startCaptureTraceInstructions(policy)
-	instructions = appendCaptureTraceBody(instructions, buildPerfSampleStackZeroInstructions(), policy)
+	instructions := startCaptureExitInstructions(policy, false)
+	instructions = appendCaptureExitBody(instructions, buildPerfSampleStackZeroInstructions(), policy)
 	instructions = append(instructions,
 		// Mark this sample as an exit-status event.
 		asm.Mov.Imm(asm.R0, int32(eventType)),
@@ -984,8 +1022,8 @@ func buildExitStatusTraceInstructions(eventsMapFD int, exitCodeOffset int16, exi
 }
 
 func buildProcessExitTraceInstructions(eventsMapFD int, policy capturePolicy) asm.Instructions {
-	instructions := startCaptureTraceInstructions(policy)
-	instructions = appendCaptureTraceBody(instructions, buildPerfSampleStackZeroInstructions(), policy)
+	instructions := startCaptureExitInstructions(policy, true)
+	instructions = appendCaptureExitBody(instructions, buildPerfSampleStackZeroInstructions(), policy)
 	instructions = append(instructions,
 		// Mark this sample as a process-exit event.
 		asm.Mov.Imm(asm.R0, perfEventTypeProcessExit),
@@ -1770,16 +1808,18 @@ func normalizeScopedFilePath(path string) string {
 }
 
 func lookupUserHome(uid uint32) string {
-	if home, ok := userHomeCache.Load(uid); ok {
+	// Keep the generation for the whole lookup, including its eventual store.
+	cache := currentUserHomeCache()
+	if home, ok := cache.Load(uid); ok {
 		return home.(string)
 	}
 	u, err := user.LookupId(strconv.FormatUint(uint64(uid), 10))
 	if err != nil {
-		userHomeCache.Store(uid, "")
+		cache.Store(uid, "")
 		return ""
 	}
 	home := filepath.Clean(strings.TrimSpace(u.HomeDir))
-	userHomeCache.Store(uid, home)
+	cache.Store(uid, home)
 	return home
 }
 

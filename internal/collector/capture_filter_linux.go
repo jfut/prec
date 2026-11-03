@@ -8,17 +8,20 @@ package collector
 import (
 	"encoding/binary"
 	"fmt"
-	"os/user"
 	"strconv"
 	"strings"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 )
 
 const (
-	captureFilterAllowLabel = "prec_capture_filter_allow"
-	captureFilterDropLabel  = "prec_capture_filter_drop"
-	captureFilterCommOffset = perfSampleStackStart - 16
+	captureFilterAllowLabel  = "prec_capture_filter_allow"
+	captureFilterDropLabel   = "prec_capture_filter_drop"
+	captureFilterCommOffset  = perfSampleStackStart - 16
+	captureIdentityKeyOffset = captureFilterCommOffset - 4
+	// Map-value offsets in eBPF loads are signed 16-bit byte offsets.
+	captureIdentityMax = 4096
 )
 
 type captureField uint8
@@ -31,17 +34,26 @@ const (
 )
 
 type captureClause struct {
-	field captureField
-	op    string
-	value uint64
-	text  string
+	field         captureField
+	op            string
+	value         uint64
+	text          string
+	identityIndex int
 }
 
 type captureRule []captureClause
 
+type captureIdentity struct {
+	field captureField
+	name  string
+}
+
 type capturePolicy struct {
-	rules   []captureRule
-	hasComm bool
+	rules           []captureRule
+	hasComm         bool
+	identities      []captureIdentity
+	identitiesMapFD int
+	processes       *ebpf.Map
 }
 
 func (p capturePolicy) empty() bool {
@@ -50,6 +62,7 @@ func (p capturePolicy) empty() bool {
 
 func compileCaptureFilter(rawRules []string) (capturePolicy, error) {
 	policy := capturePolicy{}
+	identityIndexes := make(map[captureIdentity]int)
 	for ruleIndex, raw := range rawRules {
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" {
@@ -80,6 +93,18 @@ func compileCaptureFilter(rawRules []string) (capturePolicy, error) {
 				}
 				if parsed.field == captureFieldComm {
 					policy.hasComm = true
+				} else if parsed.text != "" {
+					identity := captureIdentity{field: parsed.field, name: parsed.text}
+					index, ok := identityIndexes[identity]
+					if !ok {
+						if len(policy.identities) == captureIdentityMax {
+							return capturePolicy{}, fmt.Errorf("capture_filter has too many user/group names (maximum %d)", captureIdentityMax)
+						}
+						index = len(policy.identities)
+						identityIndexes[identity] = index
+						policy.identities = append(policy.identities, identity)
+					}
+					parsed.identityIndex = index
 				}
 				compiled = append(compiled, parsed)
 			}
@@ -132,24 +157,16 @@ func parseCaptureClause(raw string) (captureClause, error) {
 			return captureClause{}, fmt.Errorf("invalid %s value %q: %w", key, value, err)
 		}
 		return captureClause{field: captureFieldForKey(key), op: operator, value: number}, nil
-	case "user":
+	case "user", "group":
 		if operator != "=" && operator != "!=" {
-			return captureClause{}, fmt.Errorf("operator %s is not supported for user", operator)
+			return captureClause{}, fmt.Errorf("operator %s is not supported for %s", operator, key)
 		}
-		uid, err := lookupCaptureUID(value)
-		if err != nil {
-			return captureClause{}, err
+		field := captureFieldUID
+		if key == "group" {
+			field = captureFieldGID
 		}
-		return captureClause{field: captureFieldUID, op: operator, value: uid, text: value}, nil
-	case "group":
-		if operator != "=" && operator != "!=" {
-			return captureClause{}, fmt.Errorf("operator %s is not supported for group", operator)
-		}
-		gid, err := lookupCaptureGID(value)
-		if err != nil {
-			return captureClause{}, err
-		}
-		return captureClause{field: captureFieldGID, op: operator, value: gid, text: value}, nil
+		// Keep names separate from numeric rules so their IDs can change at runtime.
+		return captureClause{field: field, op: operator, text: value}, nil
 	case "comm":
 		if operator != "=" && operator != "!=" {
 			return captureClause{}, fmt.Errorf("operator %s is not supported for comm; use exact match", operator)
@@ -183,30 +200,6 @@ func isCaptureNumericOperator(op string) bool {
 	}
 }
 
-func lookupCaptureUID(name string) (uint64, error) {
-	u, err := user.Lookup(name)
-	if err != nil {
-		return 0, fmt.Errorf("lookup capture_filter user %q: %w", name, err)
-	}
-	uid, err := strconv.ParseUint(u.Uid, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("parse UID for capture_filter user %q: %w", name, err)
-	}
-	return uid, nil
-}
-
-func lookupCaptureGID(name string) (uint64, error) {
-	g, err := user.LookupGroup(name)
-	if err != nil {
-		return 0, fmt.Errorf("lookup capture_filter group %q: %w", name, err)
-	}
-	gid, err := strconv.ParseUint(g.Gid, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("parse GID for capture_filter group %q: %w", name, err)
-	}
-	return gid, nil
-}
-
 func startCaptureTraceInstructions(policy capturePolicy) asm.Instructions {
 	instructions := asm.Instructions{
 		// Preserve tracepoint context before capture_filter calls overwrite helper registers.
@@ -220,6 +213,16 @@ func startCaptureTraceInstructions(policy capturePolicy) asm.Instructions {
 }
 
 func appendCaptureTraceBody(instructions asm.Instructions, body asm.Instructions, policy capturePolicy) asm.Instructions {
+	if !policy.empty() {
+		tracking := policy.trackProcessInstructions()
+		tracking[0] = tracking[0].WithSymbol(captureFilterAllowLabel)
+		instructions = append(instructions, tracking...)
+		return append(instructions, body...)
+	}
+	return appendCaptureExitBody(instructions, body, policy)
+}
+
+func appendCaptureExitBody(instructions asm.Instructions, body asm.Instructions, policy capturePolicy) asm.Instructions {
 	if !policy.empty() && len(body) > 0 {
 		body[0] = body[0].WithSymbol(captureFilterAllowLabel)
 	}
@@ -245,6 +248,19 @@ func (p capturePolicy) guardInstructions() asm.Instructions {
 		asm.FnGetCurrentPidTgid.Call(),
 		asm.Mov.Reg(asm.R8, asm.R0),
 	)
+	if len(p.identities) > 0 {
+		// One hash value holds an immutable ID snapshot for all named clauses.
+		// Look it up after the other helpers so R5 remains valid through the guard.
+		instructions = append(instructions,
+			asm.StoreImm(asm.RFP, captureIdentityKeyOffset, 0, asm.Word),
+			asm.LoadMapPtr(asm.R1, p.identitiesMapFD),
+			asm.Mov.Reg(asm.R2, asm.RFP),
+			asm.Add.Imm(asm.R2, captureIdentityKeyOffset),
+			asm.FnMapLookupElem.Call(),
+			asm.JEq.Imm(asm.R0, 0, captureFilterDropLabel),
+			asm.Mov.Reg(asm.R5, asm.R0),
+		)
+	}
 
 	for ruleIndex, rule := range p.rules {
 		nextRuleLabel := fmt.Sprintf("prec_capture_filter_next_rule_%d", ruleIndex)
@@ -268,7 +284,11 @@ func (p capturePolicy) clauseInstructions(clause captureClause, falseLabel strin
 	}
 
 	instructions := captureFieldValueInstructions(clause.field)
-	instructions = append(instructions, asm.LoadImm(asm.R0, int64(clause.value), asm.DWord))
+	if clause.text != "" {
+		instructions = append(instructions, asm.LoadMem(asm.R0, asm.R5, int16(clause.identityIndex*8), asm.DWord))
+	} else {
+		instructions = append(instructions, asm.LoadImm(asm.R0, int64(clause.value), asm.DWord))
+	}
 	switch clause.op {
 	case "=":
 		instructions = append(instructions, asm.JNE.Reg(asm.R9, asm.R0, falseLabel))

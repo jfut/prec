@@ -99,9 +99,9 @@ Notes:
 - repeated `proc_loss` notifications are aggregated and logged at most once per second
 - file activity is collected from the `openat` and write-family syscall tracepoints such as `write`, `pwrite64`, `writev`, `pwritev`, and `pwritev2`
 - file activity collection is disabled by default and starts only when `collect_file_open = true` or `collect_file_save = true` is set in `precd.conf`
-- by default, file activity records only `source=user` operations; use `collect_file_source` to switch the target scope
+- by default, file activity records only `source=user` operations. Set `collect_file_source` to change the source scope
 - `file_open` is emitted for successful `openat` calls to regular files with write-capable intent such as `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND`, or `O_EXCL`
-- read-only `file_open` records are also emitted when `collect_file_open = true` and a non-empty `capture_filter` is configured; the early filter is required to prevent perf-ring overload
+- read-only `file_open` records are also emitted when `collect_file_open = true` and a non-empty `capture_filter` is configured. The early filter is required to prevent perf-ring overload
 - `file_save` is emitted only when the write-family target is a regular file
 - `file_dev` and `file_ino` identify the device and inode observed for the regular-file target
 - `precd` self-writes to its own `log_path` are excluded to reduce collector noise
@@ -230,15 +230,15 @@ include = "/etc/prec/precd.d/*.conf"
 ```
 
 - configuration uses TOML, so the include path must be quoted
-- `include` accepts a single file path or glob pattern; relative paths are resolved from the including file's directory
+- `include` accepts a single file path or glob pattern. Relative paths are resolved from the including file's directory
 - the including file is applied first, then matching files in lexical filename order, regardless of where `include` appears in the file
-- included files may also use `include`; nested includes are applied before the next matching file
+- included files may also use `include`. Nested includes are applied before the next matching file
 - later scalar settings override earlier values, including explicit `false` and `0`
-- `filter = [...]` and `capture_filter = [...]` in included files append rules in load order instead of overwriting earlier rules; empty arrays add no rules and do not clear earlier rules
-- omitted settings retain their previous values; compression defaults and validation are applied after all files are merged
+- `filter = [...]` and `capture_filter = [...]` in included files append rules in load order. Empty arrays add no rules and do not clear earlier rules
+- omitted settings retain their previous values. Compression defaults and validation are applied after all files are merged
 - patterns with no matches are ignored, including nonexistent literal paths
 - invalid include patterns, unreadable or malformed included files, and include cycles cause loading to fail
-- the packaged configuration enables `/etc/prec/precd.d/*.conf`; restart `precd` after changing configuration
+- the packaged configuration enables `/etc/prec/precd.d/*.conf`. Restart `precd` after changing configuration
 
 Single-instance behavior:
 
@@ -254,7 +254,7 @@ Compression modes:
 File save dedup:
 
 - `collect_file_open = true` enables `openat` syscall tracing for `file_open`
-- with a non-empty `capture_filter`, `collect_file_open = true` also captures matching read-only opens; keep the filter narrow, for example by UID, GID, or `comm`
+- with a non-empty `capture_filter`, `collect_file_open = true` also captures matching read-only opens. Keep the filter narrow, for example by UID, GID, or `comm`
 - `collect_file_save = true` enables write-family syscall tracing and emits `file_save` records
 - `collect_file_source = "user"` records only user-originated file activity (default)
 - `collect_file_source = "system"` records only system or daemon file activity
@@ -268,14 +268,49 @@ File save dedup:
 Early capture filter:
 
 - `capture_filter` is an optional positive allowlist evaluated in eBPF before events are sent to the perf ring
-- `capture_filter = [...]` in an included file adds to the existing allowlist; `capture_filter = []` does not clear it
-- rules and `||` terms are ORed; `&&` clauses within a term are ANDed
-- every rule must start with `+`; a matching event is captured and a non-matching event is dropped
+- `capture_filter = [...]` in an included file adds to the existing allowlist. `capture_filter = []` does not clear it
+- rules and `||` terms are ORed. `&&` clauses within a term are ANDed
+- an event matching multiple rules is captured only once
+- every rule must start with `+`. Matching activity is captured, and non-matching activity is dropped. Exit notifications are retained for tracked processes so they can be finalized
 - supported fields are `uid`, `gid`, `pid`, `user`, `group`, and exact `comm` matches
-- `user` and `group` names are resolved to UID/GID when `precd` starts
-- numeric fields support `=`, `!=`, `>`, `>=`, `<`, and `<=`; `user`, `group`, and `comm` support `=` and `!=`
+- `gid`/`group` match the process GID. Supplementary group memberships are not checked
+- `user` and `group` names are resolved to UID/GID at startup and refreshed every `capture_filter_refresh_sec` seconds. The default is 3600 seconds (one hour). Set it to 21600 seconds for six hours
+- `capture_filter_refresh_sec` must be a positive integer that fits in a Go duration. It can also be set in an included file
+- adding or deleting users/groups or changing their UID/GID takes effect at the next refresh without restarting `precd`. Numeric `uid`/`gid` rules remain fixed
+- nonexistent users/groups never match `user=`/`group=` and always match `user!=`/`group!=`, including when all configured names are missing
+- other lookup errors cause startup to fail. During a refresh, lookup or map-update errors are logged, the previous IDs remain active, and the next interval retries
+- all named IDs are published together through a shared eBPF map without reattaching tracepoints. Unchanged IDs require no map update
+- each successful name-resolution pass invalidates cached user/group names and home directories before publishing new IDs, including cached missing-account results and passes with unchanged IDs
+- processes admitted by the early filter are tracked in eBPF before samples are sent. Their exit status and process-exit notifications remain enabled after UID/GID changes or account deletion
+- process tracking is removed when the thread-group leader exits. Untracked processes do not bypass the early filter, and finalization clears cached command and file state
+- the process map supports up to 1,048,576 concurrent tracked processes. If registration fails, new samples for that process are dropped to avoid retaining state that cannot be finalized
+- at most 4096 distinct user/group names can be referenced in `capture_filter`. Repeated names of the same kind share one entry
+- refreshing IDs does not reload configuration files. Restart `precd` after changing rules or the refresh interval
+- numeric fields support `=`, `!=`, `>`, `>=`, `<`, and `<=`. `user`, `group`, and `comm` support `=` and `!=`
 - fields that require event data unavailable at the tracepoint, such as `exe`, `argv`, `file_path`, `record_type`, and `source`, are rejected at startup
-- `capture_filter` is a coarse prefilter for reducing kernel and perf-ring load; `filter` remains the final user-space filter
+- `capture_filter` is a coarse prefilter that reduces kernel and perf-ring load. `filter` applies the final user-space filtering
+
+The packaged configuration captures activity matching UID or GID 0, UID or GID
+at least 1000, or the users/groups `apache`, `nginx`, `php-fpm`, `www-data`,
+`tomcat`, `jboss`, `app`, `admin`, `www`, `redis`, `git`, `gitlab-www`,
+`gitlab-runner`, `jenkins`, `grafana`, `zabbix`, and `rundeck` to reduce log
+volume and log reading time.
+UID and GID conditions are independent: `gid=0` also captures non-root UIDs,
+and service group rules capture processes running under other UIDs with a
+matching GID. Missing service users/groups do not match their equality rules.
+Without a configuration file or with no capture rules, all users are captured.
+
+The packaged `filter` also excludes two repetitive `source=system` scans from
+the VS Code Server Extension Host: socket checks using `ls -l /proc/.../fd/...`
+and root-process checks using `ps -F -A -l | grep root`.
+
+To capture all users, add the following to `/etc/prec/precd.d/90-capture-all.conf`
+and restart `precd`. The appended rule matches every UID. An empty array would
+leave the existing allowlist in effect.
+
+```toml
+capture_filter = ["+uid>=0"]
+```
 
 Example:
 
@@ -283,6 +318,7 @@ Example:
 # Capture events from interactive users and selected web-server workers.
 collect_file_open = true
 collect_file_source = "any"
+capture_filter_refresh_sec = 3600
 capture_filter = [
   "+uid>=1000",
   "+user=apache",
@@ -301,7 +337,7 @@ Filter rules:
 
 - `filter_default = "allow" | "deny"` controls events that match no rule
 - `filter = ["+query", "-query", ...]` uses ordered first-match evaluation
-- `filter = [...]` in an included file appends to existing rules; `filter = []` does not clear them
+- `filter = [...]` in an included file appends to existing rules. `filter = []` does not clear them
 - rules in the main configuration are evaluated before rules from included files, so an earlier matching rule takes precedence
 - each rule must start with `+` allow or `-` deny
 - query expression syntax is identical to `prec --query`
@@ -318,9 +354,9 @@ Filter rules:
 - Default output fields with `--file-events` are `timestamp user group record_type file_path file_fd file_bytes command`
 - human-readable text omits empty optional fields, and JSON omits unavailable file-specific fields from process records
 - `prec` joins `proc_start` and `proc_end` by `event_id` and shows one logical `record_type=proc_command`
-- file records are hidden by default; use `--file-events` to include them
+- file records are hidden by default. Use `--file-events` to include them
 - file records are not merged and are shown as independent rows when `--file-events` is set
-- `--file-events` shows `file_save` records by default; use `--query "record_type=file_open"` when open intent is needed
+- `--file-events` shows `file_save` records by default. Use `--query "record_type=file_open"` when open intent is needed
 - `--tree` cannot be used with `--file-events`
 
 ### Usage
@@ -362,9 +398,10 @@ Flags:
                            file_path,file_fd,file_bytes,file_flags,
                            file_dev,file_ino
       --full-time          Print full RFC3339Nano timestamp
-  -n, --limit=0            Max rows in list mode; initial rows before follow in
-                           --follow mode (0 means unlimited in list mode and no
-                           initial rows in --follow mode)
+  -n, --limit=0            Max rows in list mode. In follow mode, this sets
+                           the number of initial rows before following. A limit
+                           of 0 means no limit in list mode and no initial rows
+                           in follow mode.
   -F, --follow             Follow command events
       --file-events        Include file events in CLI output
                            (requires `collect_file_open = true` and/or `collect_file_save = true` in `precd`)
@@ -438,7 +475,7 @@ Rules:
 - repeated `--query` is AND at top level
 - `source` value must be `user` or `system`
 - `record_type` values in `prec` query match displayed rows: `proc_command`, `proc_fail`, `proc_loss`, `file_open`, or `file_save`
-- file `record_type` queries require `--file-events`; otherwise file records are excluded before user queries are applied
+- file `record_type` queries require `--file-events`. Otherwise, file records are excluded before user queries are applied
 - raw log-only record types such as `proc_start` and `proc_end` are joined before filtering and are not accepted as query values
 - string match is case-sensitive
 - `timestamp` and `end_timestamp` accept RFC3339 or RFC3339Nano

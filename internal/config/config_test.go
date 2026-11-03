@@ -4,8 +4,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -49,11 +51,42 @@ func TestLoadDefaultWhenMissing(t *testing.T) {
 	if len(cfg.CaptureFilter) != 0 {
 		t.Fatalf("unexpected capture_filter rules: %+v", cfg.CaptureFilter)
 	}
+	if cfg.CaptureFilterRefreshSec != DefaultCaptureFilterRefreshSec {
+		t.Fatalf("unexpected capture_filter_refresh_sec: %d", cfg.CaptureFilterRefreshSec)
+	}
 	if cfg.LostSamplesAction != LostSamplesActionLog {
 		t.Fatalf("unexpected lost_samples_action: %s", cfg.LostSamplesAction)
 	}
 	if cfg.MaxArgLength != 1024 || cfg.MaxArgs != 128 {
 		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+}
+
+func TestLoadCaptureFilterRefreshSec(t *testing.T) {
+	t.Parallel()
+	for _, seconds := range []int64{-1, 0, 1, 21600, 9223372036, 9223372037} {
+		t.Run(fmt.Sprintf("seconds=%d", seconds), func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			// The included interval must override the main file like other scalars.
+			writeConfigFixtures(t, dir, map[string]string{
+				"precd.conf":   "capture_filter_refresh_sec = 3600\ninclude = \"refresh.conf\"\n",
+				"refresh.conf": fmt.Sprintf("capture_filter_refresh_sec = %d\n", seconds),
+			})
+			cfg, err := Load(filepath.Join(dir, "precd.conf"))
+			if seconds <= 0 || seconds > 9223372036 {
+				if err == nil || !strings.Contains(err.Error(), "capture_filter_refresh_sec") {
+					t.Fatalf("Load error = %v, want invalid refresh interval", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if int64(cfg.CaptureFilterRefreshSec) != seconds {
+				t.Fatalf("capture_filter_refresh_sec = %d, want %d", cfg.CaptureFilterRefreshSec, seconds)
+			}
+		})
 	}
 }
 

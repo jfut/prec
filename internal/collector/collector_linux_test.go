@@ -9,10 +9,12 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +75,50 @@ func TestCompileCaptureFilterRejectsUnsupportedRules(t *testing.T) {
 				t.Fatalf("compileCaptureFilter(%q) succeeded", raw)
 			}
 		})
+	}
+}
+
+func TestCompileCaptureFilterNamedIdentities(t *testing.T) {
+	t.Parallel()
+
+	// Identical names share a snapshot slot within each kind, while user and
+	// group names remain separate even when their spelling is the same.
+	policy, err := compileCaptureFilter([]string{
+		"+user=tomcat&&group=tomcat||user!=tomcat",
+		"+uid=48",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIdentities := []captureIdentity{
+		{field: captureFieldUID, name: "tomcat"},
+		{field: captureFieldGID, name: "tomcat"},
+	}
+	if !reflect.DeepEqual(policy.identities, wantIdentities) {
+		t.Fatalf("identities = %+v, want %+v", policy.identities, wantIdentities)
+	}
+	if policy.rules[0][0].identityIndex != 0 || policy.rules[0][1].identityIndex != 1 || policy.rules[1][0].identityIndex != 0 {
+		t.Fatalf("unexpected snapshot slot assignment: %+v", policy.rules)
+	}
+	if policy.rules[2][0].text != "" || policy.rules[2][0].value != 48 {
+		t.Fatalf("numeric rule became dynamic: %+v", policy.rules[2])
+	}
+	if _, err := compileCaptureFilter([]string{"+user=missing&&file_path=/etc/shadow"}); err == nil {
+		t.Fatal("missing user hid an unsupported field")
+	}
+}
+
+func TestCompileCaptureFilterIdentityLimit(t *testing.T) {
+	t.Parallel()
+	rules := make([]string, captureIdentityMax+1)
+	for i := range rules {
+		rules[i] = fmt.Sprintf("+user=service%d", i)
+	}
+	if _, err := compileCaptureFilter(rules[:captureIdentityMax]); err != nil {
+		t.Fatalf("maximum supported names rejected: %v", err)
+	}
+	if _, err := compileCaptureFilter(rules); err == nil {
+		t.Fatal("accepted more named identities than map offsets can address")
 	}
 }
 
@@ -580,9 +626,10 @@ func TestMatchesConfiguredFileScope(t *testing.T) {
 	t.Parallel()
 
 	homeDir := t.TempDir()
-	userHomeCache.Store(uint32(1000), homeDir)
+	cache := currentUserHomeCache()
+	cache.Store(uint32(1000), homeDir)
 	t.Cleanup(func() {
-		userHomeCache.Delete(uint32(1000))
+		cache.Delete(uint32(1000))
 	})
 
 	if !matchesConfiguredFileScope(events.CommandEvent{

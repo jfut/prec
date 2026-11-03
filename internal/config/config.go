@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -26,42 +27,47 @@ const (
 	// If not specified, gzip uses the library default and zstd uses level 3.
 	DefaultGzipCompressLevel = -1
 	DefaultZstdCompressLevel = 3
+
+	// Refresh named capture rules hourly to follow account changes during collection.
+	DefaultCaptureFilterRefreshSec = 3600
 )
 
 // Config stores daemon runtime settings.
 type Config struct {
-	LogPath           string   `toml:"log_path"`
-	Compress          string   `toml:"compress"`
-	CompressLevel     int      `toml:"compress_level"`
-	CollectFileOpen   bool     `toml:"collect_file_open"`
-	CollectFileSave   bool     `toml:"collect_file_save"`
-	CollectFileSource string   `toml:"collect_file_source"`
-	CollectFileScope  string   `toml:"collect_file_scope"`
-	FileSaveDedupSec  int      `toml:"file_save_dedup_sec"`
-	FilterDefault     string   `toml:"filter_default"`
-	Filter            []string `toml:"filter"`
-	CaptureFilter     []string `toml:"capture_filter"`
-	UserOnly          bool     `toml:"user_only"`
-	LostSamplesAction string   `toml:"lost_samples_action"`
-	MaxArgLength      int      `toml:"max_arg_length"`
-	MaxArgs           int      `toml:"max_args"`
+	LogPath                 string   `toml:"log_path"`
+	Compress                string   `toml:"compress"`
+	CompressLevel           int      `toml:"compress_level"`
+	CollectFileOpen         bool     `toml:"collect_file_open"`
+	CollectFileSave         bool     `toml:"collect_file_save"`
+	CollectFileSource       string   `toml:"collect_file_source"`
+	CollectFileScope        string   `toml:"collect_file_scope"`
+	FileSaveDedupSec        int      `toml:"file_save_dedup_sec"`
+	FilterDefault           string   `toml:"filter_default"`
+	Filter                  []string `toml:"filter"`
+	CaptureFilter           []string `toml:"capture_filter"`
+	CaptureFilterRefreshSec int      `toml:"capture_filter_refresh_sec"`
+	UserOnly                bool     `toml:"user_only"`
+	LostSamplesAction       string   `toml:"lost_samples_action"`
+	MaxArgLength            int      `toml:"max_arg_length"`
+	MaxArgs                 int      `toml:"max_args"`
 }
 
 func Default() Config {
 	return Config{
 		LogPath: DefaultLogPath,
 		// Keep zstd as the default to reduce log size when config is not set.
-		Compress:          CompressZstd,
-		CompressLevel:     DefaultZstdCompressLevel,
-		CollectFileOpen:   false,
-		CollectFileSave:   false,
-		CollectFileSource: "user",
-		CollectFileScope:  "user_visible",
-		FileSaveDedupSec:  1,
-		FilterDefault:     "allow",
-		LostSamplesAction: LostSamplesActionLog,
-		MaxArgLength:      1024,
-		MaxArgs:           128,
+		Compress:                CompressZstd,
+		CompressLevel:           DefaultZstdCompressLevel,
+		CollectFileOpen:         false,
+		CollectFileSave:         false,
+		CollectFileSource:       "user",
+		CollectFileScope:        "user_visible",
+		FileSaveDedupSec:        1,
+		FilterDefault:           "allow",
+		CaptureFilterRefreshSec: DefaultCaptureFilterRefreshSec,
+		LostSamplesAction:       LostSamplesActionLog,
+		MaxArgLength:            1024,
+		MaxArgs:                 128,
 	}
 }
 
@@ -119,6 +125,9 @@ func Load(path string) (Config, error) {
 	}
 	if err := validateFileSaveDedupSec(cfg.FileSaveDedupSec); err != nil {
 		return Config{}, err
+	}
+	if cfg.CaptureFilterRefreshSec <= 0 || int64(cfg.CaptureFilterRefreshSec) > int64((1<<63-1)/time.Second) {
+		return Config{}, fmt.Errorf("invalid capture_filter_refresh_sec: %d (must be positive and fit in time.Duration)", cfg.CaptureFilterRefreshSec)
 	}
 	if err := validateCollectFileSource(cfg.CollectFileSource); err != nil {
 		return Config{}, err
