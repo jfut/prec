@@ -1,3 +1,7 @@
+#
+# Log output
+#
+
 # Destination JSONL log file.
 # log_path = "/var/log/prec/prec.log"
 
@@ -11,8 +15,124 @@
 # no: ignored
 # compress_level = 3
 
+#
+# Event filtering
+#
+
+# Early eBPF allowlist. Rules and || terms are ORed, and && joins conditions.
+# Prefix each rule with +. Multiple matches emit one event.
+# Add host-specific capture rules in /etc/prec/precd.d/*.conf.
+# Supported fields: uid, gid, pid, user, group, comm (exact).
+# user/group names refresh periodically. Missing names never match equality rules.
+# gid/group match the primary GID only.
+# Included files append rules. An empty list does not clear earlier rules.
+# To capture all users from an included file, add:
+# capture_filter = ["+uid>=0"]
+# Fields resolved after capture, such as exe, argv, file_path, record_type, and source,
+# cannot be used here.
+# Defaults capture root, UID/GID >= 1000, and named service accounts.
+capture_filter = [
+  "+uid=0",
+  "+gid=0",
+  "+uid>=1000",
+  "+gid>=1000",
+  "+user=apache",
+  "+group=apache",
+  "+user=nginx",
+  "+group=nginx",
+  "+user=php-fpm",
+  "+group=php-fpm",
+  "+user=www-data",
+  "+group=www-data",
+  "+user=tomcat",
+  "+group=tomcat",
+  "+user=jboss",
+  "+group=jboss",
+  "+user=app",
+  "+group=app",
+  "+user=admin",
+  "+group=admin",
+  "+user=www",
+  "+group=www",
+  "+user=redis",
+  "+group=redis",
+  "+user=git",
+  "+group=git",
+  "+user=gitlab-www",
+  "+group=gitlab-www",
+  "+user=gitlab-runner",
+  "+group=gitlab-runner",
+  "+user=jenkins",
+  "+group=jenkins",
+  "+user=grafana",
+  "+group=grafana",
+  "+user=zabbix",
+  "+group=zabbix",
+  "+user=rundeck",
+  "+group=rundeck",
+]
+
+# Seconds between user/group UID/GID refreshes for capture_filter.
+# Must be positive. The default is 3600 seconds (one hour).
+# Set it to 21600 for six hours.
+# Numeric uid/gid rules remain fixed. Rule or interval changes require a restart.
+# capture_filter_refresh_sec = 3600
+
+# Store only source=user events when true.
+# Example: user_only = true
+# user_only = false
+
+# Default action when no filter rule matches.
+# Supported: "allow", "deny" (default: "allow")
+# filter_default = "allow"
+
+# Ordered filter rules.
+# Prefix each rule with:
+#   + to allow matched events
+#   - to deny matched events
+# Rules are evaluated from top to bottom. The first matched rule wins.
+# Included files append filter rules. Earlier matching rules still take precedence.
+# Add host-specific filter rules in /etc/prec/precd.d/*.conf.
+# filter = [] adds no rules and does not clear earlier rules.
+# Rules in this file are evaluated before rules from included files.
+# Query syntax follows prec --query.
+# Example:
+# filter = [
+#   "-exe~=ls",
+#   "-exe~=dnf",
+#   "+source=user&&uid>=1000",
+# ]
+filter = [
+  # Exclude repetitive process and socket scans spawned by the VS Code Server Extension Host.
+  "-source=system&&command~=ls -l /proc/",
+  "-source=system&&parent_cmdline~=ls -l /proc/",
+  "-source=system&&command~=ps -F -A -l | grep root",
+  "-source=system&&parent_cmdline~=ps -F -A -l | grep root",
+]
+
+#
+# Event recording
+#
+
+# Action when the perf ring reports dropped samples.
+# "log": write proc_loss records with dropped counts (default)
+# "ignore": do not write dropped-sample records
+# "stop": write proc_loss record, then stop precd with an error
+# lost_samples_action = "log"
+
+# Maximum characters recorded per single argument.
+# max_arg_length = 1024
+
+# Maximum number of arguments to record.
+# max_args = 128
+
+#
+# File event collection
+#
+
 # Enable file_open event collection from openat. Without capture_filter, only
-# write-capable opens are sent to the perf ring.
+# write-capable opens reach the perf ring. With capture_filter, matching
+# read-only opens are also collected.
 # collect_file_open = false
 
 # Enable file_save event collection from write-family syscalls.
@@ -28,67 +148,14 @@
 # collect_file_scope = "user_visible"
 
 # Suppress repeated file_save records for the same process and file path
-# within the configured number of seconds.
-# Set to 0 to disable suppression.
+# within the configured number of seconds. Set to 0 to disable suppression.
 # file_save_dedup_sec = 1
 
-# Early allowlist applied in eBPF before events reach the perf ring.
-# Rules and || terms are ORed. Each rule must start with + and clauses use && for AND.
-# Included files append capture_filter rules to earlier rules; they do not overwrite them.
-# capture_filter = [] adds no rules and does not clear earlier rules.
-# Supported fields: uid, gid, pid, user, group, comm (comm is exact match).
-# user/group names are resolved when precd starts.
-# Fields such as exe, argv, file_path, record_type, and source are not
-# available at this stage and cause precd startup to fail if specified.
-# capture_filter = [
-#   "+uid>=1000",
-#   "+user=apache",
-#   "+user=nginx",
-#   "+comm=php-fpm",
-# ]
-# capture_filter = []
-# When collect_file_open=true and capture_filter is non-empty, matching
-# read-only opens are also recorded. Keep this allowlist narrow to avoid logs
-# growing rapidly on busy services.
-
-# Store only source=user events when true.
-# Example: user_only = true
-# user_only = false
-
-# Action when the perf ring reports dropped samples.
-# "log": write collector_loss records with dropped counts (default)
-# "ignore": do not write dropped-sample records
-# "stop": write collector_loss record, then stop precd with an error
-# lost_samples_action = "log"
-
-# Default action when no filter rule matches.
-# Supported: "allow", "deny" (default: "allow")
-# filter_default = "allow"
-
-# Ordered filter rules.
-# Prefix each rule with:
-#   + to allow matched events
-#   - to deny matched events
-# Rules are evaluated from top to bottom. The first matched rule wins.
-# Included files append filter rules to earlier rules; they do not overwrite them.
-# filter = [] adds no rules and does not clear earlier rules.
-# Rules in this file are evaluated before rules from included files.
-# Query syntax follows prec --query.
-# Example:
-# filter = [
-#   "-exe~=ls",
-#   "-exe~=dnf",
-#   "+source=user&&uid>=1000",
-# ]
-# filter = []
-
-# Maximum characters recorded per single argument.
-# max_arg_length = 1024
-
-# Maximum number of arguments to record.
-# max_args = 128
+#
+# Additional configuration files
+#
 
 # Load additional TOML files in filename order after this file.
-# Scalar settings override earlier values; filter and capture_filter rules append.
-# Relative paths are resolved from this file's directory; no matches are ignored.
+# Included files override earlier scalar settings. filter and capture_filter rules append.
+# Paths are relative to this file, and unmatched include patterns are ignored.
 include = "/etc/prec/precd.d/*.conf"

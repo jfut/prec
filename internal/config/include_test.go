@@ -96,6 +96,57 @@ func TestLoadIncludeWithoutMatches(t *testing.T) {
 	}
 }
 
+func TestLoadPackagedFilters(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("../../packaging/precd.conf.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the packaged include behavior while isolating tests from /etc/prec.
+	main := strings.ReplaceAll(string(data), "/etc/prec/precd.d/*.conf", "precd.d/*.conf")
+	wantRules := []string{
+		"+uid=0", "+gid=0", "+uid>=1000", "+gid>=1000",
+		"+user=apache", "+group=apache", "+user=nginx", "+group=nginx",
+		"+user=php-fpm", "+group=php-fpm", "+user=www-data", "+group=www-data",
+		"+user=tomcat", "+group=tomcat", "+user=jboss", "+group=jboss",
+		"+user=app", "+group=app", "+user=admin", "+group=admin",
+		"+user=www", "+group=www", "+user=redis", "+group=redis",
+		"+user=git", "+group=git", "+user=gitlab-www", "+group=gitlab-www",
+		"+user=gitlab-runner", "+group=gitlab-runner", "+user=jenkins", "+group=jenkins",
+		"+user=grafana", "+group=grafana", "+user=zabbix", "+group=zabbix",
+		"+user=rundeck", "+group=rundeck",
+	}
+	wantFilter := []string{
+		"-source=system&&command~=ls -l /proc/",
+		"-source=system&&parent_cmdline~=ls -l /proc/",
+		"-source=system&&command~=ps -F -A -l | grep root",
+		"-source=system&&parent_cmdline~=ps -F -A -l | grep root",
+	}
+	for _, captureAll := range []bool{false, true} {
+		t.Run(fmt.Sprintf("captureAll=%t", captureAll), func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			files := map[string]string{"precd.conf": main}
+			want := Default()
+			want.CaptureFilter = append([]string(nil), wantRules...)
+			want.Filter = append([]string(nil), wantFilter...)
+			if captureAll {
+				files["precd.d/90-capture-all.conf"] = `capture_filter = ["+uid>=0"]`
+				want.CaptureFilter = append(want.CaptureFilter, "+uid>=0")
+			}
+			writeConfigFixtures(t, dir, files)
+			cfg, err := Load(filepath.Join(dir, "precd.conf"))
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			if !reflect.DeepEqual(cfg, want) {
+				t.Fatalf("config = %+v, want %+v", cfg, want)
+			}
+		})
+	}
+}
+
 func TestLoadIncludeCompression(t *testing.T) {
 	t.Parallel()
 
