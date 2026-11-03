@@ -4,6 +4,7 @@
 package events
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -208,12 +209,18 @@ func readCmdlineText(path string, limit int) (string, error) {
 		return "", nil
 	}
 
-	s := strings.ReplaceAll(string(b), "\x00", " ")
-	s = strings.TrimSpace(s)
-	if limit > 0 && len(s) > limit {
-		s = s[:limit]
+	// Mutate the bounded /proc snapshot in place instead of copying it into a
+	// second full-sized string before truncating to the display limit.
+	for i, value := range b {
+		if value == 0 {
+			b[i] = ' '
+		}
 	}
-	return s, nil
+	b = bytes.TrimSpace(b)
+	if limit > 0 && len(b) > limit {
+		b = b[:limit]
+	}
+	return string(b), nil
 }
 
 func isShellName(s string) bool {

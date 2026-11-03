@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jfut/prec/internal/events"
+	"github.com/jfut/prec/internal/query"
 )
 
 func TestBuildQueryFilterValid(t *testing.T) {
@@ -230,6 +231,7 @@ func TestBuildQueryFilterInvalid(t *testing.T) {
 		{name: "numeric parse error", specs: []string{"uid=abc"}},
 		{name: "timestamp parse error", specs: []string{"timestamp>=not-time"}},
 		{name: "duration parse error", specs: []string{"duration>=bad-value"}},
+		{name: "duration overflow", specs: []string{"duration>=999999999999-00-00 00:00:00"}},
 		{name: "dynamic string field with numeric operator", specs: []string{"user>=admin"}},
 		{name: "source invalid value", specs: []string{"source=robot"}},
 		{name: "record type invalid value", specs: []string{"record_type=robot"}},
@@ -264,9 +266,9 @@ func TestDurationValueFormatAndParse(t *testing.T) {
 		t.Fatalf("got=%q want=%q", got, "0000-00-00 00:00:03")
 	}
 
-	parsed, err := parseDurationValue("0001-02-03 04:05:06")
+	parsed, err := query.ParseDurationValue("0001-02-03 04:05:06")
 	if err != nil {
-		t.Fatalf("parseDurationValue: %v", err)
+		t.Fatalf("ParseDurationValue: %v", err)
 	}
 	// 1 year(365d) + 2 month(30d each) + 3 day + 4:05:06
 	want := int64((365+60+3)*24*60*60+(4*60*60)+(5*60)+6) * int64(time.Second)

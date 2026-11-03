@@ -8,6 +8,9 @@ import "time"
 const treeLinkWindow = 300 * time.Millisecond
 const followPollInterval = 300 * time.Millisecond
 
+// maxLogLineLength bounds memory used to read a single record from an input log.
+const maxLogLineLength = 16 * 1024 * 1024
+
 const (
 	logCompressionNone = "none"
 	logCompressionGzip = "gz"

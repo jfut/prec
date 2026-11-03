@@ -22,14 +22,9 @@ Implementation note:
 
 ## Comparison with auditd
 
-`prec` and `auditd` can both observe command execution.
+Both tools can observe command execution. `prec` provides normalized, command-centric records with `exit_status` and `proc_fail` for quick inspection and timeline reconstruction.
 
-- `prec` is focused on command visibility and quick inspection by humans
-- `prec` outputs normalized command-centric records directly
-- `prec` focuses on command execution records and includes `exit_status` and `proc_fail`
-- `prec` can also be used for forensic investigation by reconstructing execution timelines from structured records
-
-In practice, `prec` is designed for command-focused monitoring and forensic use cases. It can replace parts of `auditd` workflows that only require command execution visibility, and can also be deployed together with `auditd`.
+Use `prec` for command-focused monitoring. Use it alongside `auditd` when broader syscall or network auditing is also required.
 
 ## Scope and limits
 
@@ -40,22 +35,13 @@ In practice, `prec` is designed for command-focused monitoring and forensic use 
 
 ## Recorded fields
 
-Raw log records from `precd`:
-
-- `record_type=proc_start`
-- `record_type=proc_end`
-- `record_type=proc_fail`
-- `record_type=proc_loss`
-- `record_type=file_open`
-- `record_type=file_save`
-
-Merged `record_type` values from `prec`:
-
-- `record_type=proc_command`
-- `record_type=proc_fail`
-- `record_type=proc_loss`
-- `record_type=file_open`
-- `record_type=file_save`
+| Raw record (`precd`) | CLI row (`prec`) | Meaning |
+| --- | --- | --- |
+| `proc_start` + `proc_end` | `proc_command` | Joined by `event_id` |
+| `proc_fail` | `proc_fail` | Failed `execve` or `execveat` |
+| `proc_loss` | `proc_loss` | Dropped perf-ring samples |
+| `file_open` | `file_open` | File opened with tracked intent |
+| `file_save` | `file_save` | Successful write-family activity |
 
 `proc_start` fields:
 
@@ -76,51 +62,36 @@ Merged `record_type` values from `prec`:
 - `source`
 - unrelated proc_start-only fields are omitted from `proc_end` JSON records
 
-`proc_fail` and `proc_loss` additional fields:
+Additional fields:
 
-- `proc_fail`: `exec_errno`, `exec_error`
-- `proc_loss`: `lost_samples`, `lost_samples_total`
+| Record | Additional fields |
+| --- | --- |
+| `proc_fail` | `exec_errno`, `exec_error` |
+| `proc_loss` | `lost_samples`, `lost_samples_total` |
+| `file_open`, `file_save` | `file_path`, `file_fd`, `file_bytes`, `file_flags`, `file_dev`, `file_ino` |
 
-file event additional fields:
+Collection details:
 
-- `file_path`, `file_fd`, `file_bytes`, `file_flags`, `file_dev`, `file_ino`
-
-Notes:
-
-- `argv[0]` is normalized to a full path when possible
-- `event_id` format is `precd` start time `YYYYMMDDhhmmss` + sequence number
-- `auid` and `session_id` are read from `/proc/<pid>/loginuid` and `/proc/<pid>/sessionid`
-- `timestamp` is derived from kernel monotonic time and converted to RFC3339Nano in userspace
-- `exit_status` is the shell-visible status code range `0-255`
-- `proc_start` is written immediately after exec succeeds
-- `proc_end` is written when the process exits
-- `proc_fail` records are written when `execve` or `execveat` returns an error
-- `proc_loss` records are written when the perf ring reports dropped samples
-- repeated `proc_loss` notifications are aggregated and logged at most once per second
-- file activity is collected from the `openat` and write-family syscall tracepoints such as `write`, `pwrite64`, `writev`, `pwritev`, and `pwritev2`
-- file activity collection is disabled by default and starts only when `collect_file_open = true` or `collect_file_save = true` is set in `precd.conf`
-- by default, file activity records only `source=user` operations. Set `collect_file_source` to change the source scope
-- `file_open` is emitted for successful `openat` calls to regular files with write-capable intent such as `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND`, or `O_EXCL`
-- read-only `file_open` records are also emitted when `collect_file_open = true` and a non-empty `capture_filter` is configured. The early filter is required to prevent perf-ring overload
-- `file_save` is emitted only when the write-family target is a regular file
-- `file_dev` and `file_ino` identify the device and inode observed for the regular-file target
-- `precd` self-writes to its own `log_path` are excluded to reduce collector noise
-- repeated `file_save` events from the same process to the same file are suppressed within `file_save_dedup_sec` seconds (default: 1)
-- `collect_file_scope = "user_visible"` is the default and keeps user-visible files while excluding common hidden app-state paths and deleted temp files
-- the log writer syncs data approximately once per second during operation and also syncs during close and log rotation
+- `argv[0]` is normalized to a full path when possible. `event_id` is the `precd` start time (`YYYYMMDDhhmmss`) plus a sequence number.
+- `timestamp` is converted from kernel monotonic time to RFC3339Nano in userspace. `auid` and `session_id` come from `/proc/<pid>/loginuid` and `/proc/<pid>/sessionid`.
+- `proc_start` is written after exec succeeds; `proc_end` when the process exits. `exit_status` uses the shell-visible range `0-255`.
+- `proc_loss` notifications are aggregated and logged at most once per second.
+- File events are disabled by default. Enable `collect_file_open` and/or `collect_file_save` in `precd.conf`.
+- File events are collected from `openat` and write-family syscalls (`write`, `pwrite64`, `writev`, `pwritev`, `pwritev2`). By default, only `source=user` activity is recorded; set `collect_file_source` to change the scope.
+- `file_open` records successful opens of regular files with write intent (`O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND`, `O_EXCL`). Read-only opens require `collect_file_open = true` and a non-empty `capture_filter` to limit perf-ring load.
+- `file_save` records writes to regular files. `file_dev` and `file_ino` identify the target. Writes by `precd` to its own `log_path` are excluded.
+- Repeated `file_save` events for the same process and path are suppressed for `file_save_dedup_sec` seconds (default: 1).
+- `collect_file_scope = "user_visible"` is the default. It excludes common hidden app-state paths and deleted temporary files.
+- The log writer syncs approximately once per second, on close, and during rotation.
 
 ## Source classification
 
-`source=user` is assigned only when:
+| Event | `source=user` condition |
+| --- | --- |
+| Command | Interactive tty (`/dev/pts/*`, `/dev/tty`, or `tty_nr != 0`) and an immediate shell parent. Parent tty is used when child tty data is unavailable. |
+| File activity | Command condition above, child processes launched from an interactive user shell, non-interactive user shell builtins, or VS Code Remote SSH user processes such as `.vscode-server` `node` / extension host. |
 
-- command has an interactive tty (`/dev/pts/*` or `/dev/tty`, or `tty_nr != 0` fallback).
-  If child tty data is unavailable, parent tty is used as fallback
-- immediate parent process is a shell
-- for file events, child processes launched from an interactive user shell are also treated as `user`
-- for file events, non-interactive user shell builtins are also treated as `user`
-- for file events, VS Code Remote SSH user processes such as `.vscode-server` `node` / extension host are also treated as `user`
-
-Everything else is `source=system`.
+All other events are `source=system`.
 
 ## Installation
 
@@ -130,6 +101,7 @@ Run package installation, manual system installation, and service management com
 
 For rpm and deb upgrades (for example with `dnf update` or `apt upgrade`), package post-install scripts run `systemctl restart precd.service` automatically.
 For rpm and deb uninstall actions, package post-remove scripts run `systemctl stop precd.service` automatically.
+Both package and manual installs use `/etc/logrotate.d/prec` with `daily` rotation and `rotate 7305` (about 20 years). Adjust `rotate` to suit your retention policy.
 
 ### RPM releases with dnf-plugin-anyrepo
 
@@ -173,9 +145,6 @@ apk add --allow-untrusted dist/prec_*_x86_64.apk
 pacman -U dist/prec-*-x86_64.pkg.tar.zst
 ```
 
-Package installs place `/etc/logrotate.d/prec` with a default policy of `daily` and `rotate 7305` (about 20 years of retention).
-Adjust the `rotate` value as needed to match your retention policy.
-
 ### Manual install from source
 
 Build the binaries first:
@@ -205,9 +174,6 @@ install -m 0640 packaging/systemd/precd.service /usr/lib/systemd/system/
 install -m 0640 packaging/logrotate/prec /etc/logrotate.d/prec
 ```
 
-The installed `/etc/logrotate.d/prec` default is `daily` with `rotate 7305` (about 20 years of retention).
-Adjust the `rotate` value as needed to match your retention policy.
-
 ### Enable and start precd
 
 ```bash
@@ -223,90 +189,82 @@ Default config path: `/etc/prec/precd.conf`
 
 See: [packaging/precd.conf.example](packaging/precd.conf.example)
 
-Additional configuration files:
+### Configuration files
+
+Additional files are loaded with:
 
 ```toml
 include = "/etc/prec/precd.d/*.conf"
 ```
 
-- configuration uses TOML, so the include path must be quoted
-- `include` accepts a single file path or glob pattern. Relative paths are resolved from the including file's directory
-- the including file is applied first, then matching files in lexical filename order, regardless of where `include` appears in the file
-- included files may also use `include`. Nested includes are applied before the next matching file
-- later scalar settings override earlier values, including explicit `false` and `0`
-- `filter = [...]` and `capture_filter = [...]` in included files append rules in load order. Empty arrays add no rules and do not clear earlier rules
-- omitted settings retain their previous values. Compression defaults and validation are applied after all files are merged
-- patterns with no matches are ignored, including nonexistent literal paths
-- invalid include patterns, unreadable or malformed included files, and include cycles cause loading to fail
-- the packaged configuration enables `/etc/prec/precd.d/*.conf`. Restart `precd` after changing configuration
+| Rule | Behavior |
+| --- | --- |
+| Path | TOML-quoted file path or glob; relative paths use the including file's directory. |
+| Order | Main file first, then matches in lexical order. Nested includes are loaded before the next match. |
+| Overrides | Later scalar values win, including `false` and `0`. Omitted settings keep their previous values. |
+| Rule arrays | `filter` and `capture_filter` arrays append in load order; empty arrays do not clear existing rules. |
+| Defaults | Compression defaults and validation are applied after all files are merged. |
+| Missing matches | Patterns with no matches, including nonexistent literal paths, are ignored. |
+| Errors | Invalid patterns, unreadable or malformed files, and include cycles fail loading. |
 
-Single-instance behavior:
+The packaged config includes `/etc/prec/precd.d/*.conf`. Restart `precd` after config changes.
 
-- `precd` acquires an exclusive `flock` on `<log_path>.lock` at startup
-- if the lock is already held, startup fails immediately to prevent duplicate collection
+### Single-instance and file safety
 
-Compression modes:
+| Check | Behavior |
+| --- | --- |
+| Lock | `precd` takes an exclusive `flock` on `<log_path>.lock`; an existing lock makes startup fail. |
+| Paths | Log and lock paths cannot contain symlinks. Parent directories must be owned by root or the current user and not writable by others. Root-owned sticky directories are allowed. |
+| Targets | Log and lock files must be single-link regular files owned by `precd`. |
 
-- `compress = "no"` plain JSONL
-- `compress = "gz"` gzip-compressed JSONL stream
-- `compress = "zstd"` zstd-compressed JSONL stream (default)
+### Compression
 
-File save dedup:
+| `compress` | Format |
+| --- | --- |
+| `no` | Plain JSONL |
+| `gz` | Gzip JSONL stream |
+| `zstd` | Zstandard JSONL stream (default) |
 
-- `collect_file_open = true` enables `openat` syscall tracing for `file_open`
-- with a non-empty `capture_filter`, `collect_file_open = true` also captures matching read-only opens. Keep the filter narrow, for example by UID, GID, or `comm`
-- `collect_file_save = true` enables write-family syscall tracing and emits `file_save` records
-- `collect_file_source = "user"` records only user-originated file activity (default)
-- `collect_file_source = "system"` records only system or daemon file activity
-- `collect_file_source = "any"` records both user and system file activity
-- `collect_file_scope = "user_visible"` records user-visible files and excludes common hidden app-state paths (default)
-- `collect_file_scope = "home"` records all files under the user's home directory
-- `collect_file_scope = "all"` records all tracked regular-file paths
-- `file_save_dedup_sec = 1` suppress repeated `file_save` records for the same `pid` and `file_path` within the configured window
-- `file_save_dedup_sec = 0` disables this suppression
+### File event settings
 
-Early capture filter:
+| Setting | Behavior |
+| --- | --- |
+| `collect_file_open = true` | Trace `openat` for `file_open`. With a non-empty `capture_filter`, matching read-only opens are included; keep this filter narrow (for example, by UID, GID, or `comm`). |
+| `collect_file_save = true` | Trace write-family syscalls for `file_save`. |
+| `collect_file_source` | `user` (default) records user activity; `system` records system/daemon activity; `any` records both. |
+| `collect_file_scope` | `user_visible` (default) excludes common hidden app-state paths; `home` limits events to the user's home; `all` includes tracked regular-file paths. |
+| `file_save_dedup_sec` | Suppress repeated records for the same `pid` and `file_path` during this window. Default `1`; `0` disables. Must be non-negative and fit in `time.Duration`. |
 
-- `capture_filter` is an optional positive allowlist evaluated in eBPF before events are sent to the perf ring
-- `capture_filter = [...]` in an included file adds to the existing allowlist. `capture_filter = []` does not clear it
-- rules and `||` terms are ORed. `&&` clauses within a term are ANDed
-- an event matching multiple rules is captured only once
-- every rule must start with `+`. Matching activity is captured, and non-matching activity is dropped. Exit notifications are retained for tracked processes so they can be finalized
-- supported fields are `uid`, `gid`, `pid`, `user`, `group`, and exact `comm` matches
-- `gid`/`group` match the process GID. Supplementary group memberships are not checked
-- `user` and `group` names are resolved to UID/GID at startup and refreshed every `capture_filter_refresh_sec` seconds. The default is 3600 seconds (one hour). Set it to 21600 seconds for six hours
-- `capture_filter_refresh_sec` must be a positive integer that fits in a Go duration. It can also be set in an included file
-- adding or deleting users/groups or changing their UID/GID takes effect at the next refresh without restarting `precd`. Numeric `uid`/`gid` rules remain fixed
-- nonexistent users/groups never match `user=`/`group=` and always match `user!=`/`group!=`, including when all configured names are missing
-- other lookup errors cause startup to fail. During a refresh, lookup or map-update errors are logged, the previous IDs remain active, and the next interval retries
-- all named IDs are published together through a shared eBPF map without reattaching tracepoints. Unchanged IDs require no map update
-- each successful name-resolution pass invalidates cached user/group names and home directories before publishing new IDs, including cached missing-account results and passes with unchanged IDs
-- processes admitted by the early filter are tracked in eBPF before samples are sent. Their exit status and process-exit notifications remain enabled after UID/GID changes or account deletion
-- process tracking is removed when the thread-group leader exits. Untracked processes do not bypass the early filter, and finalization clears cached command and file state
-- the process map supports up to 1,048,576 concurrent tracked processes. If registration fails, new samples for that process are dropped to avoid retaining state that cannot be finalized
-- at most 4096 distinct user/group names can be referenced in `capture_filter`. Repeated names of the same kind share one entry
-- refreshing IDs does not reload configuration files. Restart `precd` after changing rules or the refresh interval
-- numeric fields support `=`, `!=`, `>`, `>=`, `<`, and `<=`. `user`, `group`, and `comm` support `=` and `!=`
-- fields that require event data unavailable at the tracepoint, such as `exe`, `argv`, `file_path`, `record_type`, and `source`, are rejected at startup
-- `capture_filter` is a coarse prefilter that reduces kernel and perf-ring load. `filter` applies the final user-space filtering
+### Early capture filter
 
-The packaged configuration captures activity matching UID or GID 0, UID or GID
-at least 1000, or the users/groups `apache`, `nginx`, `php-fpm`, `www-data`,
-`tomcat`, `jboss`, `app`, `admin`, `www`, `redis`, `git`, `gitlab-www`,
-`gitlab-runner`, `jenkins`, `grafana`, `zabbix`, and `rundeck` to reduce log
-volume and log reading time.
-UID and GID conditions are independent: `gid=0` also captures non-root UIDs,
-and service group rules capture processes running under other UIDs with a
-matching GID. Missing service users/groups do not match their equality rules.
-Without a configuration file or with no capture rules, all users are captured.
+`capture_filter` is an optional eBPF allowlist evaluated before events reach the perf ring. It reduces kernel and ring load; `filter` still applies final user-space filtering.
 
-The packaged `filter` also excludes two repetitive `source=system` scans from
-the VS Code Server Extension Host: socket checks using `ls -l /proc/.../fd/...`
-and root-process checks using `ps -F -A -l | grep root`.
+| Rule | Behavior |
+| --- | --- |
+| Syntax | Every rule starts with `+`. Rules are ORed; `&&` clauses within a term are ANDed. Matching events are captured once; other events are dropped. |
+| Included files | Arrays append; `capture_filter = []` does not clear existing rules. |
+| Fields | `uid`, `gid`, `pid`, `user`, `group`, and exact `comm`. Numeric fields support `=`, `!=`, `>`, `>=`, `<`, `<=`; names and `comm` support `=` and `!=`. |
+| Unavailable fields | Fields such as `exe`, `argv`, `file_path`, `record_type`, and `source` are rejected at startup. |
+| Groups | `gid` and `group` match the process GID; supplementary groups are not checked. |
+| Refresh | Names resolve at startup and every `capture_filter_refresh_sec` seconds (default `3600`). The value must be positive and fit in `time.Duration`. Set `21600` for six hours. |
+| Account changes | User/group additions, removals, and UID/GID changes take effect at the next refresh. Numeric `uid`/`gid` rules do not change. Restart `precd` to change rules or the refresh interval. |
+| Missing names | Missing accounts never match `user=`/`group=` and always match `user!=`/`group!=`. |
+| Lookup errors | Errors fail startup. Refresh errors are logged, retain the previous IDs, and retry at the next interval. |
+| Process tracking | Matching processes are tracked before samples are sent. Exit status and exit notifications remain available after account changes; tracking ends when the thread-group leader exits. Untracked processes do not bypass the filter. |
+| Limits | Up to 4096 distinct user/group names and 1,048,576 tracked processes. Repeated names of the same kind share one entry. If process registration fails, new samples for that process are dropped. |
 
-To capture all users, add the following to `/etc/prec/precd.d/90-capture-all.conf`
-and restart `precd`. The appended rule matches every UID. An empty array would
-leave the existing allowlist in effect.
+Each successful name refresh also invalidates cached user/group names and home directories, including cached missing-account results.
+
+The packaged config captures:
+
+- UID or GID `0`, and UID or GID `>=1000` (conditions are independent; `gid=0` also matches non-root UIDs)
+- Matching users or groups: `apache`, `nginx`, `php-fpm`, `www-data`, `tomcat`, `jboss`, `app`, `admin`, `www`, `redis`, `git`, `gitlab-www`, `gitlab-runner`, `jenkins`, `grafana`, `zabbix`, `rundeck`
+
+Missing service accounts do not match equality rules. With no config or capture rules, all users are captured.
+
+The packaged `filter` excludes repetitive VS Code Server Extension Host system scans: socket checks (`ls -l /proc/.../fd/...`) and root-process checks (`ps -F -A -l | grep root`).
+
+To capture all users, add this rule to `/etc/prec/precd.d/90-capture-all.conf` and restart `precd`:
 
 ```toml
 capture_filter = ["+uid>=0"]
@@ -327,37 +285,35 @@ capture_filter = [
 ]
 ```
 
-Lost sample actions:
+### Lost sample actions
 
-- `lost_samples_action = "log"` write `proc_loss` records (default)
-- `lost_samples_action = "ignore"` skip `proc_loss` records
-- `lost_samples_action = "stop"` write one `proc_loss` record and stop `precd`
+| Setting | Behavior |
+| --- | --- |
+| `lost_samples_action = "log"` (default) | Write `proc_loss` records. |
+| `lost_samples_action = "ignore"` | Skip `proc_loss` records. |
+| `lost_samples_action = "stop"` | Write one `proc_loss` record, then stop `precd`. |
 
-Filter rules:
+### User-space filter
 
-- `filter_default = "allow" | "deny"` controls events that match no rule
-- `filter = ["+query", "-query", ...]` uses ordered first-match evaluation
-- `filter = [...]` in an included file appends to existing rules. `filter = []` does not clear them
-- rules in the main configuration are evaluated before rules from included files, so an earlier matching rule takes precedence
-- each rule must start with `+` allow or `-` deny
-- query expression syntax is identical to `prec --query`
-- if a rule has no `+` or `-` prefix, `precd` fails to start
-- legacy `include_*` and `exclude_*` keys are rejected
+| Setting | Behavior |
+| --- | --- |
+| `filter_default` | `allow` or `deny` for events not matched by a rule. |
+| `filter` | Ordered first-match rules: `+query` allows, `-query` denies. Syntax matches `prec --query`. |
+| Included files | Rules append after main-file rules; empty arrays do not clear rules. Main-file rules are evaluated first. |
+| Invalid config | Missing `+`/`-` prefixes and legacy `include_*` / `exclude_*` keys fail startup. |
 
 ## CLI behavior
 
 ### Default behavior
 
-- `prec` without options is equivalent to applying `--source user`
-- `prec` with `--query` also applies the selected `--source` filter unless `--source any` is specified
-- Default output fields are `timestamp user group command`
-- Default output fields with `--file-events` are `timestamp user group record_type file_path file_fd file_bytes command`
-- human-readable text omits empty optional fields, and JSON omits unavailable file-specific fields from process records
-- `prec` joins `proc_start` and `proc_end` by `event_id` and shows one logical `record_type=proc_command`
-- file records are hidden by default. Use `--file-events` to include them
-- file records are not merged and are shown as independent rows when `--file-events` is set
-- `--file-events` shows `file_save` records by default. Use `--query "record_type=file_open"` when open intent is needed
-- `--tree` cannot be used with `--file-events`
+| Case | Behavior |
+| --- | --- |
+| Source | Defaults to `user`; `--query` keeps the selected source unless `--source any` is set. |
+| Default fields | `timestamp user group command`; with `--file-events`: `timestamp user group record_type file_path file_fd file_bytes command`. |
+| Command rows | `proc_start` and `proc_end` are joined by `event_id` into one `proc_command` row. |
+| File rows | Hidden by default. `--file-events` shows independent file rows; `file_save` is the default. Query `record_type=file_open` to show open intent. |
+| Text / JSON | Text omits empty optional fields; JSON omits unavailable file fields on process rows. |
+| Escaping | Text and CSV escape control characters to protect row and terminal structure. |
 
 ### Usage
 
@@ -412,46 +368,32 @@ Flags:
 
 ### Modes
 
-- list mode: default
-- follow mode: `--follow` or `-F`
+| Mode | Selection |
+| --- | --- |
+| List | Default |
+| Follow | `--follow` or `-F` |
 
-Follow mode semantics:
+In follow mode:
 
-- when `proc_start` arrives, `prec` prints a provisional merged row
-- `prec` processes `proc_end` only when finalized fields are needed by output or query
-  - output fields: `end_timestamp`, `duration_ns`, `duration`, `exit_status`
-  - query keys: `end_timestamp`, `duration_ns`, `duration`, `exit_status`
-- when `proc_end` is processed, `prec` prints another row for the same `event_id` with finalized values and then releases in-memory join state
-- file save records are streamed as-is with `--file-events` and do not require proc_start/proc_end join processing
+- `proc_start` prints a provisional row. `proc_end` is read only when output or query needs `end_timestamp`, `duration_ns`, `duration`, or `exit_status`.
+- When `proc_end` is read, a finalized row is printed for the same `event_id`, then join state is released.
+- `file_save` rows stream independently and do not use the process join.
 
-### Core options
+### Additional CLI details
 
-- `-i`, `--input`: read from specified log path instead of config `log_path`
-- `-a`, `--all-logs`: include rotated logs in list mode and follow initial backfill
-  - gzip and zstd layers are detected from file content and unwrapped recursively, so gzip-compressed rotated zstd logs are included
-- `-s`, `--source`: select source (`user`, `system`, `any`)
-  - use `any` when `--query` contains custom `source` logic
-- `-q`, `--query`: filter expression, repeatable
-- `-f`, `--fields`: output fields selection
-- `--full-time`: keep RFC3339Nano timestamp text
-- `-n`, `--limit`: max rows in list mode, or initial rows before follow
-- `--tree`: tree view in text list mode only
-- `-o`, `--output`: output format selection (`text`, `json`, `csv`)
-- `--version`: print version and build info (`version`, `commit`, `date`, `builtBy`, `treeState`)
+| Option | Additional behavior |
+| --- | --- |
+| `--all-logs` | Detects gzip and zstd by content and unwraps nested layers. Skips symlinks and non-regular files. In follow mode, rotated logs are used only for initial backfill; live follow stays on the base path. |
+| `--version` | Prints `version`, `commit`, `date`, `builtBy`, and `treeState`. |
 
 ### Mode constraints
 
-- Default output mode is text
-- `--tree` cannot be used with `--follow`
+- Default output is `text`.
+- `--tree` requires list mode and cannot be combined with `--file-events`.
 
 ### Follow with compressed logs
 
-`--follow` works with `compress = "gz"` and `compress = "zstd"` logs.
-It tracks log rotation similarly to `tail -F`.
-
-`--all-logs` nuance in follow mode:
-- rotated files are used only for initial backfill (`-n`)
-- live follow continues on the base log file path
+`--follow` supports `compress = "gz"` and `compress = "zstd"` and follows rotation like `tail -F`.
 
 ## Query syntax
 
@@ -462,145 +404,72 @@ Syntax:
 --query "cond1&&cond2||cond3"
 ```
 
-Operators:
-
-- numeric, timestamp, and duration: `= != > >= < <=`
-- string and argv text: `= != ~= !~=`
+| Value type | Operators |
+| --- | --- |
+| Numeric, timestamp, duration | `= != > >= < <=` |
+| String, `argv` text | `= != ~= !~=` |
 
 Rules:
 
-- `&&` is AND operator
-- `||` is OR operator
-- AND has higher precedence than OR
-- repeated `--query` is AND at top level
-- `source` value must be `user` or `system`
-- `record_type` values in `prec` query match displayed rows: `proc_command`, `proc_fail`, `proc_loss`, `file_open`, or `file_save`
-- file `record_type` queries require `--file-events`. Otherwise, file records are excluded before user queries are applied
-- raw log-only record types such as `proc_start` and `proc_end` are joined before filtering and are not accepted as query values
-- string match is case-sensitive
-- `timestamp` and `end_timestamp` accept RFC3339 or RFC3339Nano
-- `duration` accepts `YYYY-MM-DD HH:MM:SS` and means elapsed `year-month-day hour:minute:second`
-  - example: `0001-02-03 04:05:06` means 1 year, 2 months, 3 days, 4 hours, 5 minutes, 6 seconds
-  - conversion rule is fixed to 1 year = 365 days, 1 month = 30 days
-- escaping `&&` and `||` inside values is not supported
-- `end_timestamp`, `exit_status`, `duration`, and `duration_ns` conditions match only finalized command rows, not provisional rows
+- `&&` means AND; `||` means OR. AND has higher precedence. Repeated `--query` options are ANDed.
+- String matches are case-sensitive. Escaping `&&` or `||` inside values is unsupported.
+- `source` accepts `user` or `system`.
+- Query `record_type` values are displayed rows: `proc_command`, `proc_fail`, `proc_loss`, `file_open`, and `file_save`. File rows require `--file-events`; raw `proc_start` and `proc_end` values are not queryable.
+- `timestamp` and `end_timestamp` accept RFC3339 or RFC3339Nano.
+- `duration` uses `YYYY-MM-DD HH:MM:SS`; conversion is fixed at 365 days per year and 30 days per month. Example: `0001-02-03 04:05:06` is 1 year, 2 months, 3 days, 4 hours, 5 minutes, and 6 seconds.
+- `end_timestamp`, `exit_status`, `duration`, and `duration_ns` match finalized command rows only.
 
-Supported query keys:
+Keys include every field in each record plus derived `command` and `duration`.
 
-- all JSON fields in each event record
-- derived keys: `command`, `duration`
-
-Type rules:
-
-- numeric/timestamp/duration typed keys keep strict operators:
-  - numeric: `uid`, `gid`, `auid`, `session_id`, `pid`, `ppid`, `argc`, `tty_nr`, `exit_status`, `duration_ns`, `exec_errno`, `lost_samples`, `lost_samples_total`, `parent_tty_nr`, `file_fd`, `file_bytes`, `file_flags`, `file_dev`, `file_ino`
-  - timestamp: `timestamp`, `end_timestamp`
-  - duration: `duration`
-- array key: `argv` is string-matched as joined text
-- other keys are treated as string fields and support `= != ~= !~=`
+| Type | Keys | Match behavior |
+| --- | --- | --- |
+| Numeric | `uid`, `gid`, `auid`, `session_id`, `pid`, `ppid`, `argc`, `tty_nr`, `exit_status`, `duration_ns`, `exec_errno`, `lost_samples`, `lost_samples_total`, `parent_tty_nr`, `file_fd`, `file_bytes`, `file_flags`, `file_dev`, `file_ino` | Numeric operators |
+| Timestamp | `timestamp`, `end_timestamp` | RFC3339 comparison |
+| Duration | `duration` | Duration operators |
+| Array | `argv` | String-match joined text |
+| Other fields | All remaining keys | String operators |
 
 ## Output fields with `-f`
 
-Supported fields:
+| Group | Fields |
+| --- | --- |
+| All | `all` |
+| Identity and time | `timestamp`, `end_timestamp`, `event_id`, `user`, `group`, `uid`, `gid`, `auid`, `session_id` |
+| Command | `command`, `pid`, `ppid`, `comm`, `exe`, `cwd`, `argv`, `argc`, `cgroup`, `tty`, `tty_nr`, `source` |
+| Result | `record_type`, `exit_status`, `duration_ns`, `duration`, `exec_errno`, `exec_error`, `lost_samples`, `lost_samples_total` |
+| Parent | `parent_comm`, `parent_exe`, `parent_cmdline`, `parent_tty`, `parent_tty_nr` |
+| File | `file_path`, `file_fd`, `file_bytes`, `file_flags`, `file_dev`, `file_ino` |
 
-- `all`
-- `timestamp`, `end_timestamp`, `event_id`, `user`, `group`, `command`
-- `uid`, `gid`, `auid`, `session_id`, `pid`, `ppid`
-- `comm`, `exe`, `cwd`, `argv`, `argc`
-- `cgroup`, `tty`, `tty_nr`, `source`, `record_type`, `exit_status`, `duration_ns`, `duration`, `exec_errno`, `exec_error`, `lost_samples`, `lost_samples_total`
-- `parent_comm`, `parent_exe`, `parent_cmdline`, `parent_tty`, `parent_tty_nr`
-- `file_path`, `file_fd`, `file_bytes`, `file_flags`, `file_dev`, `file_ino`
-
-Selection rules:
-
-- no `-f`: default fields
-- plain tokens only: explicit mode, output only specified fields in that order
-- token with `+` or `-`: start from defaults, then add or remove
-- `all` expands to all fields
+| Selection | Behavior |
+| --- | --- |
+| No `-f` | Use default fields. |
+| Plain field names | Output only those fields, in the specified order. |
+| `+field` / `-field` | Start with defaults, then add or remove fields. |
+| `all` | Expand to all fields. |
 
 Examples:
 
-- `-f timestamp,uid,gid,group,command`
-- `-f +uid,gid,group,-timestamp,user`
-- `-f all,-end_timestamp,event_id,duration_ns,duration,cgroup,tty,tty_nr,source,parent_comm,parent_exe,parent_cmdline,parent_tty,parent_tty_nr,file_path,file_fd,file_bytes,file_flags,file_dev,file_ino`
-- `prec -s any --query "record_type=proc_loss" -f timestamp,record_type,lost_samples,lost_samples_total`
-- `prec -s any --query "record_type=proc_fail" -f timestamp,auid,session_id,exe,exec_errno,exec_error`
-- `prec --file-events -s any --query "record_type=file_open" -f timestamp,user,record_type,file_path,file_fd,file_flags`
-- `prec --file-events -s any --query "record_type=file_save&&file_bytes>=4096" -f timestamp,user,record_type,file_path,file_fd,file_bytes`
+- Explicit fields: `-f timestamp,uid,gid,group,command`
+- Add and remove: `-f +uid,gid,group,-timestamp,user`
+- Exclude several fields: `-f all,-end_timestamp,event_id,duration_ns,duration,cgroup,tty,tty_nr,source,parent_comm,parent_exe,parent_cmdline,parent_tty,parent_tty_nr,file_path,file_fd,file_bytes,file_flags,file_dev,file_ino`
+- Query failures: `prec -s any --query "record_type=proc_fail" -f timestamp,auid,session_id,exe,exec_errno,exec_error`
+- Query file writes: `prec --file-events -s any --query "record_type=file_save&&file_bytes>=4096" -f timestamp,user,record_type,file_path,file_fd,file_bytes`
 
 ## Quick examples
 
-Show recent user-origin command executions with default fields.
-
-```bash
-prec
-```
-
-Follow mode with 10 initial rows, then keep streaming new events.
-
-```bash
-prec -F -n 10
-```
-
-Follow mode in CSV with all available fields.
-
-```bash
-prec -F -n 10 -f all -o csv
-```
-
-Follow mode in pretty-printed JSON for pipeline analysis.
-
-```bash
-prec -F -n 10 -f all -o json | jq .
-```
-
-Filter by UID range, useful to focus on regular users except a specific service account.
-
-```bash
-prec -q "uid>=1000&&uid!=1999"
-```
-
-Include all sources and show commands run by `user1` or `root`.
-
-```bash
-prec -s any -q "user=user1||user=root"
-```
-
-Show `curl` executions after a specific time and add duration and exit status.
-
-```bash
-prec -q "exe~=curl" --query "timestamp>=2026-01-01T00:00:00+09:00" -f +duration,exit_status
-```
-
-Find long-running commands that executed for 10 minutes or more.
-
-```bash
-prec -q "duration>=0000-00-00 00:10:00" -f timestamp,end_timestamp,duration,uid,gid,user,group,command
-```
-
-Print selected fields with full RFC3339Nano timestamps.
-
-```bash
-prec -f timestamp,uid,gid,command --full-time
-```
-
-Show both `user` and `system` events.
-
-```bash
-prec -s any
-```
-
-Show only `system` events.
-
-```bash
-prec -s system
-```
-
-Monitor commands executed by common web server accounts, which helps detect command execution caused by OS command injection attacks and possible web shell activity.
-
-```bash
-prec -s any -q "uid=48 || uid=976 || user=apache || user=nginx"
-```
+| Task | Command |
+| --- | --- |
+| Recent user commands | `prec` |
+| Follow with 10 initial rows | `prec -F -n 10` |
+| Follow as CSV | `prec -F -n 10 -f all -o csv` |
+| Follow as JSON | `prec -F -n 10 -f all -o json` |
+| UID range, excluding one UID | `prec -q "uid>=1000&&uid!=1999"` |
+| Commands by a specific user | `prec -s any -q "user=user1"` |
+| `curl` after a timestamp, with result fields | `prec -q "exe~=curl" --query "timestamp>=2026-01-01T00:00:00+09:00" -f +duration,exit_status` |
+| Commands lasting at least 10 minutes | `prec -q "duration>=0000-00-00 00:10:00" -f timestamp,end_timestamp,duration,uid,gid,user,group,command` |
+| Selected fields with full timestamps | `prec -f timestamp,uid,gid,command --full-time` |
+| All sources / system only | `prec -s any` / `prec -s system` |
+| Commands by Apache | `prec -s any -q "user=apache"` |
 
 ## Development
 

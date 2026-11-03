@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/jfut/prec/internal/config"
 	"github.com/jfut/prec/internal/events"
+	"github.com/jfut/prec/internal/safefile"
 )
 
 // JSONLWriter appends events line by line to a root-owned log file.
@@ -29,25 +29,19 @@ type JSONLWriter struct {
 	enc           *json.Encoder
 	compress      string
 	compressLevel int
+	gzipWriter    *gzip.Writer
 	zstdEncoder   *zstd.Encoder
+	zstdBuffer    []byte
+	gzipBuffer    bytes.Buffer
 	lastSyncAt    time.Time
 }
 
 const logSyncInterval = time.Second
 
 func NewJSONLWriter(logPath string, compress string, compressLevel int) (*JSONLWriter, error) {
-	dir := filepath.Dir(logPath)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return nil, fmt.Errorf("create log dir: %w", err)
-	}
-
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	f, err := openLogFile(logPath)
 	if err != nil {
-		return nil, fmt.Errorf("open log file: %w", err)
-	}
-	if err := f.Chmod(0o640); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("chmod log file: %w", err)
+		return nil, err
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(compress))
@@ -71,7 +65,7 @@ func NewJSONLWriter(logPath string, compress string, compressLevel int) (*JSONLW
 			f.Close()
 			return nil, fmt.Errorf("init gzip writer: %w", err)
 		}
-		gz.Close()
+		w.gzipWriter = gz
 	case config.CompressZstd:
 		enc, err := zstd.NewWriter(
 			nil,
@@ -94,6 +88,9 @@ func NewJSONLWriter(logPath string, compress string, compressLevel int) (*JSONLW
 func (w *JSONLWriter) WriteEvent(ev events.CommandEvent) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.f == nil {
+		return fmt.Errorf("logger is closed")
+	}
 
 	var err error
 	switch w.compress {
@@ -167,10 +164,17 @@ func (w *JSONLWriter) writeGzipEvent(ev events.CommandEvent) error {
 	}
 
 	// Append one event per gzip frame to limit damage if corruption occurs mid-stream.
-	var buf bytes.Buffer
-	gz, err := gzip.NewWriterLevel(&buf, w.compressLevel)
-	if err != nil {
-		return fmt.Errorf("init gzip writer: %w", err)
+	w.gzipBuffer.Reset()
+	gz := w.gzipWriter
+	if gz == nil {
+		var err error
+		gz, err = gzip.NewWriterLevel(&w.gzipBuffer, w.compressLevel)
+		if err != nil {
+			return fmt.Errorf("init gzip writer: %w", err)
+		}
+		w.gzipWriter = gz
+	} else {
+		gz.Reset(&w.gzipBuffer)
 	}
 	if _, err := gz.Write(line); err != nil {
 		gz.Close()
@@ -179,7 +183,7 @@ func (w *JSONLWriter) writeGzipEvent(ev events.CommandEvent) error {
 	if err := gz.Close(); err != nil {
 		return fmt.Errorf("gzip close: %w", err)
 	}
-	if _, err := w.f.Write(buf.Bytes()); err != nil {
+	if _, err := w.f.Write(w.gzipBuffer.Bytes()); err != nil {
 		return fmt.Errorf("write event: %w", err)
 	}
 	return nil
@@ -190,10 +194,11 @@ func (w *JSONLWriter) writeZstdEvent(ev events.CommandEvent) error {
 	if err != nil {
 		return err
 	}
-	compressed := w.zstdEncoder.EncodeAll(line, nil)
+	compressed := w.zstdEncoder.EncodeAll(line, w.zstdBuffer[:0])
 	if _, err := w.f.Write(compressed); err != nil {
 		return fmt.Errorf("write event: %w", err)
 	}
+	w.zstdBuffer = compressed[:0]
 	return nil
 }
 
@@ -218,26 +223,15 @@ func closeZstdEncoder(enc *zstd.Encoder) error {
 }
 
 func (w *JSONLWriter) openOutputs() (*os.File, *json.Encoder, *zstd.Encoder, error) {
-	f, err := os.OpenFile(w.logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	f, err := openLogFile(w.logPath)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("open log file: %w", err)
-	}
-	if err := f.Chmod(0o640); err != nil {
-		f.Close()
-		return nil, nil, nil, fmt.Errorf("chmod log file: %w", err)
+		return nil, nil, nil, err
 	}
 
 	switch w.compress {
 	case config.CompressNo:
 		return f, json.NewEncoder(f), nil, nil
 	case config.CompressGzip:
-		// Re-validate that the configured gzip level is still valid during reopen.
-		gz, err := gzip.NewWriterLevel(io.Discard, w.compressLevel)
-		if err != nil {
-			f.Close()
-			return nil, nil, nil, fmt.Errorf("init gzip writer: %w", err)
-		}
-		gz.Close()
 		return f, nil, nil, nil
 	case config.CompressZstd:
 		enc, err := zstd.NewWriter(
@@ -254,6 +248,16 @@ func (w *JSONLWriter) openOutputs() (*os.File, *json.Encoder, *zstd.Encoder, err
 		f.Close()
 		return nil, nil, nil, fmt.Errorf("unsupported compress mode: %s", w.compress)
 	}
+}
+
+// openLogFile accepts only a current-user-owned regular file with one link,
+// preventing a privileged daemon from redirecting writes to unrelated targets.
+func openLogFile(path string) (*os.File, error) {
+	f, err := safefile.OpenAppend(path, 0o640)
+	if err != nil {
+		return nil, fmt.Errorf("open log file: %w", err)
+	}
+	return f, nil
 }
 
 func (w *JSONLWriter) Close() error {
@@ -276,6 +280,9 @@ func (w *JSONLWriter) Close() error {
 
 	w.f = nil
 	w.enc = nil
+	w.gzipWriter = nil
 	w.zstdEncoder = nil
+	w.zstdBuffer = nil
+	w.gzipBuffer = bytes.Buffer{}
 	return firstErr
 }

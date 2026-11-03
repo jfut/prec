@@ -178,8 +178,9 @@ func validateFilterDefault(v string) error {
 }
 
 func validateFileSaveDedupSec(v int) error {
-	if v < 0 {
-		return fmt.Errorf("invalid file_save_dedup_sec: %d (allowed: 0 or greater)", v)
+	const maxSeconds = int64(1<<63-1) / int64(time.Second)
+	if v < 0 || int64(v) > maxSeconds {
+		return fmt.Errorf("invalid file_save_dedup_sec: %d (must be non-negative and fit in time.Duration)", v)
 	}
 	return nil
 }

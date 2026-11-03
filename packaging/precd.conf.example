@@ -120,7 +120,7 @@ filter = [
 # "stop": write proc_loss record, then stop precd with an error
 # lost_samples_action = "log"
 
-# Maximum characters recorded per single argument.
+# Maximum bytes recorded per single argument.
 # max_arg_length = 1024
 
 # Maximum number of arguments to record.

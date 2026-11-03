@@ -31,6 +31,10 @@ type daemonCLI struct {
 }
 
 func main() {
+	os.Exit(run())
+}
+
+func run() (exitCode int) {
 	// Initialize defaults and parse arguments through kong.
 	cli := daemonCLI{
 		Config: config.DefaultConfigPath,
@@ -42,53 +46,82 @@ func main() {
 		kong.Writers(os.Stdout, os.Stderr),
 	)
 	if err != nil {
-		log.Fatalf("init parser: %v", err)
+		log.Printf("init parser: %v", err)
+		return 1
 	}
 	if _, err := parser.Parse(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 
 	if cli.Version {
 		fmt.Println(formatVersionInfo())
-		return
+		return 0
 	}
 
 	if os.Geteuid() != 0 {
-		log.Fatal("precd must run as root")
+		log.Print("precd must run as root")
+		return 1
 	}
 
 	cfg, err := config.Load(cli.Config)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Printf("load config: %v", err)
+		return 1
 	}
 
 	lock, err := acquireSingletonLock(cfg.LogPath)
 	if err != nil {
 		if errors.Is(err, errPrecdAlreadyRunning) {
-			log.Fatalf("another precd instance is already running: %v", err)
+			log.Printf("another precd instance is already running: %v", err)
+			return 1
 		}
-		log.Fatalf("init singleton lock: %v", err)
+		log.Printf("init singleton lock: %v", err)
+		return 1
 	}
-	defer lock.Close()
+	defer func() {
+		if err := lock.Close(); err != nil {
+			log.Printf("close singleton lock: %v", err)
+			if exitCode == 0 {
+				exitCode = 1
+			}
+		}
+	}()
 
 	w, err := logger.NewJSONLWriter(cfg.LogPath, cfg.Compress, cfg.CompressLevel)
 	if err != nil {
-		log.Fatalf("init logger: %v", err)
+		log.Printf("init logger: %v", err)
+		return 1
 	}
-	defer w.Close()
+	defer func() {
+		if err := w.Close(); err != nil {
+			log.Printf("close logger: %v", err)
+			if exitCode == 0 {
+				exitCode = 1
+			}
+		}
+	}()
 
 	svc, err := collector.NewService(cfg, w)
 	if err != nil {
-		log.Fatalf("init collector: %v", err)
+		log.Printf("init collector: %v", err)
+		return 1
 	}
 
 	stop := make(chan struct{})
 	sigCh := make(chan os.Signal, 2)
+	signalDone := make(chan struct{})
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sigCh)
+	defer close(signalDone)
 	go func() {
-		for sig := range sigCh {
+		for {
+			var sig os.Signal
+			select {
+			case sig = <-sigCh:
+			case <-signalDone:
+				return
+			}
 			switch sig {
 			case syscall.SIGHUP:
 				// Reopen the file descriptor after logrotate and append to the new file.
@@ -103,8 +136,10 @@ func main() {
 	}()
 
 	if err := svc.Run(stop); err != nil {
-		log.Fatalf("run collector: %v", err)
+		log.Printf("run collector: %v", err)
+		return 1
 	}
+	return 0
 }
 
 // formatVersionInfo builds a single-line version string for --version output.

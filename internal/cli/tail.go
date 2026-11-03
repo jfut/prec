@@ -5,12 +5,12 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/jfut/prec/internal/events"
@@ -28,8 +28,14 @@ func runList(logPaths []string, limit int, lf listFilter, opt outputOptions) int
 	if header := formatter.Header(); header != "" {
 		fmt.Println(header)
 	}
-	for _, line := range renderEventsWithFormatter(buf, opt, formatter) {
-		fmt.Println(line)
+	if opt.tree {
+		for _, line := range renderEventTreeWithFormatter(buf, formatter) {
+			fmt.Println(line)
+		}
+		return 0
+	}
+	for _, ev := range buf {
+		fmt.Println(formatter.Format(ev))
 	}
 	return 0
 }
@@ -80,8 +86,9 @@ func runTailPlain(logPath string, lf listFilter, joinState *commandJoinState, fo
 	}
 
 	r := bufio.NewReader(f)
+	pending := make([]byte, 0)
 	for {
-		line, err := r.ReadString('\n')
+		line, err := readBoundedLogLine(r, &pending)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				nextFile, replaced, err := reopenFollowFileByName(logPath, f)
@@ -92,6 +99,7 @@ func runTailPlain(logPath string, lf listFilter, joinState *commandJoinState, fo
 				if replaced {
 					f = nextFile
 					r = bufio.NewReader(f)
+					pending = pending[:0]
 					continue
 				}
 				// If copytruncate shrinks the same inode, rewind and read from the beginning.
@@ -100,6 +108,7 @@ func runTailPlain(logPath string, lf listFilter, joinState *commandJoinState, fo
 					return 1
 				} else if rewound {
 					r = bufio.NewReader(f)
+					pending = pending[:0]
 					continue
 				}
 				time.Sleep(followPollInterval)
@@ -109,11 +118,30 @@ func runTailPlain(logPath string, lf listFilter, joinState *commandJoinState, fo
 			return 1
 		}
 
-		line = strings.TrimSpace(line)
-		if line == "" {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
 			continue
 		}
-		emitMergedEventLines(line, lf, joinState, formatter, includeCommandEnd)
+		emitMergedEvent(line, lf, joinState, formatter, includeCommandEnd)
+	}
+}
+
+func readBoundedLogLine(reader *bufio.Reader, pending *[]byte) ([]byte, error) {
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(*pending)+len(fragment) > maxLogLineLength {
+			return nil, fmt.Errorf("log line exceeds %d bytes", maxLogLineLength)
+		}
+		*pending = append(*pending, fragment...)
+		if err == nil {
+			line := *pending
+			*pending = (*pending)[:0]
+			return line, nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return nil, err
 	}
 }
 
@@ -140,12 +168,12 @@ func runTailCompressed(logPath string, compressionMode string, lf listFilter, jo
 
 	const maxChunkSize = 256 * 1024
 	buf := make([]byte, maxChunkSize)
-	handleLine := func(line string) {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	handleLine := func(line []byte) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
 			return
 		}
-		emitMergedEventLines(line, lf, joinState, formatter, includeCommandEnd)
+		emitMergedEvent(line, lf, joinState, formatter, includeCommandEnd)
 	}
 	if err := tailReader.Reset(compressionMode, handleLine); err != nil {
 		fmt.Fprintf(os.Stderr, "reset tail reader: %v\n", err)
@@ -298,19 +326,17 @@ func printLastN(logPaths []string, n int, lf listFilter, joinState *commandJoinS
 	return nil
 }
 
-func emitMergedEventLines(line string, lf listFilter, joinState *commandJoinState, formatter outputFormatter, includeCommandEnd bool) {
+func emitMergedEvent(line []byte, lf listFilter, joinState *commandJoinState, formatter outputFormatter, includeCommandEnd bool) {
 	// In fast mode, skip end lines before JSON decode to reduce CPU cost.
-	if !includeCommandEnd && strings.Contains(line, commandEndRecordTypeMarker) {
+	if !includeCommandEnd && bytes.Contains(line, []byte(commandEndRecordTypeMarker)) {
 		return
 	}
 	var ev events.CommandEvent
-	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+	if err := json.Unmarshal(line, &ev); err != nil {
 		return
 	}
-	for _, merged := range mergeEventsForStreaming(joinState, ev, includeCommandEnd) {
-		if !matchFilter(merged, lf) {
-			continue
-		}
+	merged, keep := mergeEventForStreaming(joinState, ev, includeCommandEnd)
+	if keep && matchFilter(merged, lf) {
 		fmt.Println(formatter.Format(merged))
 	}
 }

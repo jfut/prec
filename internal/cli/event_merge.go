@@ -13,13 +13,15 @@ func newCommandJoinState() *commandJoinState {
 	return &commandJoinState{pending: make(map[string]events.CommandEvent)}
 }
 
-func mergeEventsForList(raw []events.CommandEvent, joinState *commandJoinState, includeCommandEnd bool) []events.CommandEvent {
+func mergeEventsForList(raw []events.CommandEvent, joinState *commandJoinState) []events.CommandEvent {
 	state := joinState
 	if state == nil {
 		state = newCommandJoinState()
 	}
 
-	out := make([]events.CommandEvent, 0, len(raw))
+	rawLen := len(raw)
+	// Compact in place because each source record emits at most one list row.
+	out := raw[:0]
 	indexByEventID := make(map[string]int)
 	for _, ev := range raw {
 		if ev.RecordType == events.RecordTypeCommand {
@@ -27,68 +29,63 @@ func mergeEventsForList(raw []events.CommandEvent, joinState *commandJoinState, 
 			continue
 		}
 		if isMergeCandidateRecordType(ev.RecordType) {
-			for _, merged := range mergeEventsForStreaming(state, ev, includeCommandEnd) {
-				if merged.EventID == "" {
-					out = append(out, merged)
-					continue
-				}
-				idx, exists := indexByEventID[merged.EventID]
-				if !exists {
-					indexByEventID[merged.EventID] = len(out)
-					out = append(out, merged)
-					continue
-				}
-				out[idx] = merged
+			merged, keep := mergeEventForStreaming(state, ev, true)
+			if !keep {
+				continue
 			}
+			if merged.EventID == "" {
+				out = append(out, merged)
+				continue
+			}
+			idx, exists := indexByEventID[merged.EventID]
+			if !exists {
+				indexByEventID[merged.EventID] = len(out)
+				out = append(out, merged)
+				continue
+			}
+			out[idx] = merged
 			continue
 		}
 		out = append(out, ev)
 	}
+	clear(raw[len(out):rawLen])
 	return out
 }
 
-func mergeEventsForStreaming(state *commandJoinState, ev events.CommandEvent, includeCommandEnd bool) []events.CommandEvent {
+func mergeEventForStreaming(state *commandJoinState, ev events.CommandEvent, includeCommandEnd bool) (events.CommandEvent, bool) {
+	if !includeCommandEnd {
+		return mergedEventWithoutCommandEnd(ev)
+	}
 	if state == nil {
 		state = newCommandJoinState()
 	}
 
-	if !includeCommandEnd {
-		switch ev.RecordType {
-		case events.RecordTypeStart:
-			return []events.CommandEvent{mergedCommandFromStart(ev)}
-		case events.RecordTypeEnd, events.RecordTypeCommand:
-			return nil
-		default:
-			return []events.CommandEvent{ev}
-		}
-	}
-
 	if !isMergeCandidateRecordType(ev.RecordType) {
 		if ev.RecordType == events.RecordTypeCommand {
-			return nil
+			return events.CommandEvent{}, false
 		}
-		return []events.CommandEvent{ev}
+		return ev, true
 	}
 	if ev.EventID == "" {
-		return nil
+		return events.CommandEvent{}, false
 	}
 
 	switch ev.RecordType {
 	case events.RecordTypeStart:
 		merged := mergedCommandFromStart(ev)
 		state.pending[ev.EventID] = merged
-		return []events.CommandEvent{merged}
+		return merged, true
 	case events.RecordTypeEnd:
 		start, ok := state.pending[ev.EventID]
 		if !ok {
-			return nil
+			return events.CommandEvent{}, false
 		}
 		merged := applyCommandEnd(start, ev)
 		// The command is finalized, so remove it from pending to keep memory usage stable.
 		delete(state.pending, ev.EventID)
-		return []events.CommandEvent{merged}
+		return merged, true
 	default:
-		return nil
+		return events.CommandEvent{}, false
 	}
 }
 

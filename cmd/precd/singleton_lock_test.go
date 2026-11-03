@@ -5,6 +5,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -45,5 +46,35 @@ func TestAcquireSingletonLockAllowsNextAfterClose(t *testing.T) {
 	}
 	if err := second.Close(); err != nil {
 		t.Fatalf("close second lock: %v", err)
+	}
+}
+
+func TestAcquireSingletonLockRejectsSymlinkPath(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "prec.log")
+	lockPath := lockPathFromLogPath(logPath)
+	target := filepath.Join(filepath.Dir(logPath), "target")
+	if err := os.WriteFile(target, []byte("protected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, lockPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireSingletonLock(logPath); err == nil {
+		t.Fatalf("acquireSingletonLock should reject a symbolic link")
+	}
+}
+
+func TestAcquireSingletonLockRejectsHardLinkPath(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "prec.log")
+	lockPath := lockPathFromLogPath(logPath)
+	target := filepath.Join(filepath.Dir(logPath), "target")
+	if err := os.WriteFile(target, []byte("protected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(target, lockPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireSingletonLock(logPath); err == nil {
+		t.Fatalf("acquireSingletonLock should reject a hard link")
 	}
 }

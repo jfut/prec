@@ -290,15 +290,15 @@ func TestRunHelpFieldsFlagHasExplicitLineBreak(t *testing.T) {
 	}
 }
 
-func TestResolveInputLogPath(t *testing.T) {
+func TestResolveInputLogSetting(t *testing.T) {
 	t.Parallel()
 
 	t.Run("prefer cli log path when specified", func(t *testing.T) {
 		t.Parallel()
 
-		got, err := resolveInputLogPath("/non/existent.conf", "/tmp/custom.log")
+		got, _, err := resolveInputLogSetting("/non/existent.conf", "/tmp/custom.log")
 		if err != nil {
-			t.Fatalf("resolveInputLogPath: %v", err)
+			t.Fatalf("resolveInputLogSetting: %v", err)
 		}
 		if got != "/tmp/custom.log" {
 			t.Fatalf("got=%q want=%q", got, "/tmp/custom.log")
@@ -316,9 +316,9 @@ func TestResolveInputLogPath(t *testing.T) {
 			t.Fatalf("write config: %v", err)
 		}
 
-		got, err := resolveInputLogPath(cfgPath, "")
+		got, _, err := resolveInputLogSetting(cfgPath, "")
 		if err != nil {
-			t.Fatalf("resolveInputLogPath: %v", err)
+			t.Fatalf("resolveInputLogSetting: %v", err)
 		}
 		if got != want {
 			t.Fatalf("got=%q want=%q", got, want)
@@ -328,9 +328,9 @@ func TestResolveInputLogPath(t *testing.T) {
 	t.Run("fallback to default log path when config file is missing", func(t *testing.T) {
 		t.Parallel()
 
-		got, err := resolveInputLogPath("/path/that/does/not/exist/precd.conf", "")
+		got, _, err := resolveInputLogSetting("/path/that/does/not/exist/precd.conf", "")
 		if err != nil {
-			t.Fatalf("resolveInputLogPath: %v", err)
+			t.Fatalf("resolveInputLogSetting: %v", err)
 		}
 		if got != config.DefaultLogPath {
 			t.Fatalf("got=%q want=%q", got, config.DefaultLogPath)

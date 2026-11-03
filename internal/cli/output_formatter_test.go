@@ -12,6 +12,10 @@ import (
 	"github.com/jfut/prec/internal/events"
 )
 
+func formatOutputForTest(ev events.CommandEvent, opt outputOptions) string {
+	return newOutputFormatter(opt).Format(ev)
+}
+
 func TestFormatEventSimple(t *testing.T) {
 	t.Parallel()
 
@@ -19,10 +23,10 @@ func TestFormatEventSimple(t *testing.T) {
 		Timestamp: "2026-05-22T22:41:37.715161125+09:00",
 		User:      "admin",
 		Group:     "admin",
-		Argv:      []string{"curl", "https://httpbin.org/ip"},
+		Argv:      []string{"curl", "https://httpbin.org/ip\n\x1b[31mowned"},
 	}
 	got := formatEventSimple(ev, false)
-	want := "2026-05-22 22:41:37 admin admin curl https://httpbin.org/ip"
+	want := "2026-05-22 22:41:37 admin admin curl https://httpbin.org/ip\\x0a\\x1b[31mowned"
 	if got != want {
 		t.Fatalf("got=%q want=%q", got, want)
 	}
@@ -94,7 +98,7 @@ func TestRenderEventTree(t *testing.T) {
 		},
 	}
 
-	got := renderEvents(in, outputOptions{tree: true, fullTime: false})
+	got := renderEventTreeWithFormatter(in, newOutputFormatter(outputOptions{fullTime: false}))
 	want := []string{
 		"2026-05-22 23:05:12 admin admin /bin/curl https://httpbin.org/ip",
 		"2026-05-22 22:48:40 admin admin /home/admin/.local/share/aquaproj-aqua/bin/go test",
@@ -115,7 +119,7 @@ func TestFormatEventForOutputJSON(t *testing.T) {
 		Source:    events.SourceUser,
 		Argv:      []string{"/bin/curl", "https://httpbin.org/ip"},
 	}
-	got := formatEventForOutput(ev, outputOptions{
+	got := formatOutputForTest(ev, outputOptions{
 		fullTime: false,
 		format:   outputFormatJSON,
 	})
@@ -146,7 +150,7 @@ func TestFormatEventForOutputJSONOmitsUnavailableFileFields(t *testing.T) {
 		RecordType: events.RecordTypeCommand,
 		Argv:       []string{"/bin/vi", "a"},
 	}
-	got := formatEventForOutput(ev, outputOptions{
+	got := formatOutputForTest(ev, outputOptions{
 		format:     outputFormatJSON,
 		fileEvents: true,
 	})
@@ -173,13 +177,13 @@ func TestFormatEventForOutputCSV(t *testing.T) {
 		GID:       1002,
 		User:      "admin",
 		Group:     "admin",
-		Argv:      []string{"/bin/curl", "https://httpbin.org/ip"},
+		Argv:      []string{"/bin/curl", "https://httpbin.org/ip\n\x1b[31mowned"},
 	}
-	got := formatEventForOutput(ev, outputOptions{
+	got := formatOutputForTest(ev, outputOptions{
 		fullTime: false,
 		format:   outputFormatCSV,
 	})
-	if got != "2026-05-22 22:41:37,admin,admin,/bin/curl https://httpbin.org/ip" {
+	if got != "2026-05-22 22:41:37,admin,admin,/bin/curl https://httpbin.org/ip\\x0a\\x1b[31mowned" {
 		t.Fatalf("unexpected csv output: %q", got)
 	}
 }
@@ -294,7 +298,7 @@ func TestFormatEventForOutputWithExtraFields(t *testing.T) {
 		Group:     "admin",
 		Argv:      []string{"/bin/curl", "https://httpbin.org/ip"},
 	}
-	got := formatEventForOutput(ev, outputOptions{
+	got := formatOutputForTest(ev, outputOptions{
 		fullTime: false,
 		fields:   []string{"uid", "gid", "user"},
 	})
@@ -315,7 +319,7 @@ func TestFormatEventForOutputWithAuditAndLossFields(t *testing.T) {
 		ExecErrno:   intPtr(2),
 		ExecError:   "no such file or directory",
 	}
-	got := formatEventForOutput(ev, outputOptions{
+	got := formatOutputForTest(ev, outputOptions{
 		fullTime: false,
 		fields:   []string{"auid", "session_id", "record_type", "exec_errno", "exec_error", "lost_samples", "lost_samples_total"},
 	})
@@ -341,7 +345,7 @@ func TestFormatEventForOutputWithFileFields(t *testing.T) {
 		FileDev:    &dev,
 		FileIno:    &ino,
 	}
-	got := formatEventForOutput(ev, outputOptions{
+	got := formatOutputForTest(ev, outputOptions{
 		fullTime: false,
 		fields:   []string{"record_type", "file_path", "file_fd", "file_bytes", "file_flags", "file_dev", "file_ino"},
 	})
@@ -365,7 +369,7 @@ func TestFormatEventForOutputWithDefaultFileEventFields(t *testing.T) {
 		FileFD:     &fd,
 		FileBytes:  &bytes,
 	}
-	got := formatEventForOutput(ev, outputOptions{
+	got := formatOutputForTest(ev, outputOptions{
 		fullTime:   false,
 		fileEvents: true,
 	})
@@ -384,7 +388,7 @@ func TestFormatEventForOutputWithDefaultFileFieldsOmitsEmptyValues(t *testing.T)
 		RecordType: events.RecordTypeCommand,
 		Argv:       []string{"/bin/ls", "--color=tty"},
 	}
-	got := formatEventForOutput(ev, outputOptions{
+	got := formatOutputForTest(ev, outputOptions{
 		fullTime:   false,
 		fileEvents: true,
 	})
@@ -410,7 +414,7 @@ func TestFormatEventForOutputWithAllDoesNotDuplicateDefaultFields(t *testing.T) 
 		Group:     "admin",
 		Argv:      []string{"/bin/curl", "https://httpbin.org/ip"},
 	}
-	got := formatEventForOutput(ev, outputOptions{
+	got := formatOutputForTest(ev, outputOptions{
 		fullTime: false,
 		fields:   fields,
 	})

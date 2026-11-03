@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jfut/prec/internal/events"
 )
@@ -47,6 +48,7 @@ func (f structuredTextFormatter) Format(ev events.CommandEvent) string {
 	values := csvRecord(ev, outputOptions{fullTime: f.fullTime}, f.fields)
 	compact := values[:0]
 	for _, value := range values {
+		value = sanitizeTerminalText(value)
 		if value == "" {
 			continue
 		}
@@ -83,7 +85,11 @@ func (f csvFormatter) Header() string {
 }
 
 func (f csvFormatter) Format(ev events.CommandEvent) string {
-	line, err := csvRecordLine(csvRecord(ev, outputOptions{fullTime: f.fullTime}, f.fields))
+	record := csvRecord(ev, outputOptions{fullTime: f.fullTime}, f.fields)
+	for i := range record {
+		record[i] = sanitizeTerminalText(record[i])
+	}
+	line, err := csvRecordLine(record)
 	if err != nil {
 		return ""
 	}
@@ -109,10 +115,6 @@ func newOutputFormatter(opt outputOptions) outputFormatter {
 	}
 }
 
-func formatEventForOutput(ev events.CommandEvent, opt outputOptions) string {
-	return newOutputFormatter(opt).Format(ev)
-}
-
 func formatEventSimple(ev events.CommandEvent, fullTime bool) string {
 	userName := ev.User
 	if userName == "" {
@@ -122,7 +124,46 @@ func formatEventSimple(ev events.CommandEvent, fullTime bool) string {
 	if groupName == "" {
 		groupName = "-"
 	}
-	return fmt.Sprintf("%s %s %s %s", formatTimestamp(ev.Timestamp, fullTime), userName, groupName, commandText(ev))
+	return fmt.Sprintf(
+		"%s %s %s %s",
+		sanitizeTerminalText(formatTimestamp(ev.Timestamp, fullTime)),
+		sanitizeTerminalText(userName),
+		sanitizeTerminalText(groupName),
+		sanitizeTerminalText(commandText(ev)),
+	)
+}
+
+// sanitizeTerminalText makes recorded control characters visible instead of
+// letting command arguments forge rows or send terminal control sequences.
+func sanitizeTerminalText(value string) string {
+	if strings.IndexFunc(value, unicode.IsControl) < 0 {
+		return value
+	}
+	const hexDigits = "0123456789abcdef"
+	var out strings.Builder
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			if r <= 0xff {
+				control := byte(r)
+				out.WriteString(`\x`)
+				out.WriteByte(hexDigits[control>>4])
+				out.WriteByte(hexDigits[control&0x0f])
+			} else {
+				out.WriteString(`\u`)
+				started := false
+				for shift := 28; shift >= 0; shift -= 4 {
+					digit := byte(uint32(r) >> uint(shift) & 0x0f)
+					if digit != 0 || started || shift <= 12 {
+						out.WriteByte(hexDigits[digit])
+						started = true
+					}
+				}
+			}
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }
 
 func formatTimestamp(raw string, fullTime bool) string {
@@ -137,21 +178,6 @@ func formatTimestamp(raw string, fullTime bool) string {
 		return raw
 	}
 	return t.Format("2006-01-02 15:04:05")
-}
-
-func renderEvents(eventsIn []events.CommandEvent, opt outputOptions) []string {
-	return renderEventsWithFormatter(eventsIn, opt, newOutputFormatter(opt))
-}
-
-func renderEventsWithFormatter(eventsIn []events.CommandEvent, opt outputOptions, formatter outputFormatter) []string {
-	if !opt.tree {
-		lines := make([]string, 0, len(eventsIn))
-		for _, ev := range eventsIn {
-			lines = append(lines, formatter.Format(ev))
-		}
-		return lines
-	}
-	return renderEventTreeWithFormatter(eventsIn, formatter)
 }
 
 type treeRenderNode struct {
@@ -450,10 +476,12 @@ func formatOutputFieldValue(field string, ev events.CommandEvent, fullTime bool)
 		return strconv.Itoa(val)
 	case int64:
 		return strconv.FormatInt(val, 10)
+	case uint64:
+		return strconv.FormatUint(val, 10)
 	case nil:
 		return ""
 	default:
-		return fmt.Sprint(val)
+		return ""
 	}
 }
 

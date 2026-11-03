@@ -5,6 +5,7 @@ package events
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -351,19 +352,27 @@ func parseCmdline(path string, maxArgs int, maxArgLength int) ([]string, error) 
 		return nil, nil
 	}
 
-	parts := strings.Split(string(b), "\x00")
-	out := make([]string, 0, maxArgs)
-	for _, p := range parts {
-		if p == "" {
+	if maxArgs <= 0 {
+		return nil, nil
+	}
+	// Stop after the configured argument count instead of splitting every NUL byte.
+	out := make([]string, 0, min(maxArgs, 128))
+	for len(b) > 0 && len(out) < maxArgs {
+		end := bytes.IndexByte(b, 0)
+		arg := b
+		if end >= 0 {
+			arg = b[:end]
+			b = b[end+1:]
+		} else {
+			b = nil
+		}
+		if len(arg) == 0 {
 			continue
 		}
-		if len(out) >= maxArgs {
-			break
+		if maxArgLength > 0 && len(arg) > maxArgLength {
+			arg = arg[:maxArgLength]
 		}
-		if len(p) > maxArgLength {
-			p = p[:maxArgLength]
-		}
-		out = append(out, p)
+		out = append(out, string(arg))
 	}
 	return out, nil
 }

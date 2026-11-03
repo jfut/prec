@@ -62,6 +62,13 @@ func TestOpenLogReaderUnwrapsLayeredCompression(t *testing.T) {
 	if len(got) != 1 || got[0].PID != 55 {
 		t.Fatalf("unexpected events: %+v", got)
 	}
+	limited, err := collectFilteredEvents([]string{path}, 1, lf)
+	if err != nil {
+		t.Fatalf("collectFilteredEvents(limit): %v", err)
+	}
+	if len(limited) != 1 || limited[0].PID != 55 {
+		t.Fatalf("unexpected limited events: %+v", limited)
+	}
 }
 
 func TestIsReplacedByName(t *testing.T) {
@@ -190,17 +197,34 @@ func TestDetectLogCompressionWithHint(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "prec.log")
+	path := filepath.Join(tmpDir, "prec.log.gz")
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 
-	got, err := detectLogCompression(path, config.CompressZstd)
+	got, err := detectLogCompression(path, "")
+	if err != nil {
+		t.Fatalf("detectLogCompression without hint: %v", err)
+	}
+	if got != logCompressionNone {
+		t.Fatalf("suffix-only detection got=%q want=%q", got, logCompressionNone)
+	}
+	got, err = detectLogCompression(path, config.CompressZstd)
 	if err != nil {
 		t.Fatalf("detectLogCompression: %v", err)
 	}
 	if got != logCompressionZstd {
 		t.Fatalf("got=%q want=%q", got, logCompressionZstd)
+	}
+	if err := os.WriteFile(path, []byte{0x28, 0xb5, 0x2f, 0xfd}, 0o644); err != nil {
+		t.Fatalf("write content magic: %v", err)
+	}
+	got, err = detectLogCompression(path, logCompressionGzip)
+	if err != nil {
+		t.Fatalf("detectLogCompression(content): %v", err)
+	}
+	if got != logCompressionZstd {
+		t.Fatalf("content detection got=%q want=%q", got, logCompressionZstd)
 	}
 }
 
@@ -230,9 +254,9 @@ func TestCompressedTailReaderReadsFrames(t *testing.T) {
 			reader := newCompressedTailReader()
 			defer reader.Close()
 
-			handleLine := func(line string) {
+			handleLine := func(line []byte) {
 				mu.Lock()
-				lines = append(lines, line)
+				lines = append(lines, string(line))
 				mu.Unlock()
 			}
 
