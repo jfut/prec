@@ -31,7 +31,7 @@ func resolveLogPaths(logPath string, allLogs bool) ([]string, error) {
 
 	files := make([]logFileMeta, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			continue
 		}
 		name := entry.Name()
@@ -42,6 +42,9 @@ func resolveLogPaths(logPath string, allLogs bool) ([]string, error) {
 		if err != nil {
 			continue
 		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
 		files = append(files, logFileMeta{
 			path:    filepath.Join(dirPath, name),
 			name:    name,
@@ -50,6 +53,9 @@ func resolveLogPaths(logPath string, allLogs bool) ([]string, error) {
 	}
 
 	if len(files) == 0 {
+		if info, err := os.Lstat(logPath); err == nil && !info.Mode().IsRegular() {
+			return []string{}, nil
+		}
 		return []string{logPath}, nil
 	}
 

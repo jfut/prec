@@ -23,10 +23,6 @@ func matchFilter(ev events.CommandEvent, lf listFilter) bool {
 	return lf.compiled.Match(ev)
 }
 
-func parseDurationValue(raw string) (int64, error) {
-	return query.ParseDurationValue(raw)
-}
-
 func formatDurationValue(durationNS *int64) string {
 	return query.FormatDurationValue(durationNS)
 }

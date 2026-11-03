@@ -52,7 +52,7 @@ func TestMergeEventsForListJoinsStartEnd(t *testing.T) {
 		LostSamples: int64Ptr(1),
 	}
 
-	got := mergeEventsForList([]events.CommandEvent{start, end, openStart, execFailure, loss}, nil, true)
+	got := mergeEventsForList([]events.CommandEvent{start, end, openStart, execFailure, loss}, nil)
 	if len(got) != 4 {
 		t.Fatalf("got len=%d want=4", len(got))
 	}
@@ -109,42 +109,42 @@ func TestMergeEventsForStreamingStartThenEnd(t *testing.T) {
 		ExitStatus: &exitStatus,
 	}
 
-	startOut := mergeEventsForStreaming(state, start, true)
-	if len(startOut) != 1 {
-		t.Fatalf("start out len=%d want=1", len(startOut))
+	startOut, keep := mergeEventForStreaming(state, start, true)
+	if !keep {
+		t.Fatalf("start event should be emitted")
 	}
 	if len(state.pending) != 1 {
 		t.Fatalf("pending len after start=%d want=1", len(state.pending))
 	}
-	if startOut[0].RecordType != events.RecordTypeCommand {
-		t.Fatalf("start record_type=%q want=%q", startOut[0].RecordType, events.RecordTypeCommand)
+	if startOut.RecordType != events.RecordTypeCommand {
+		t.Fatalf("start record_type=%q want=%q", startOut.RecordType, events.RecordTypeCommand)
 	}
-	if startOut[0].EndTimestamp != "" || startOut[0].DurationNS != nil || startOut[0].ExitStatus != nil {
-		t.Fatalf("start should be provisional: %+v", startOut[0])
+	if startOut.EndTimestamp != "" || startOut.DurationNS != nil || startOut.ExitStatus != nil {
+		t.Fatalf("start should be provisional: %+v", startOut)
 	}
 
-	endOut := mergeEventsForStreaming(state, end, true)
-	if len(endOut) != 1 {
-		t.Fatalf("end out len=%d want=1", len(endOut))
+	endOut, keep := mergeEventForStreaming(state, end, true)
+	if !keep {
+		t.Fatalf("end event should finalize the command")
 	}
 	if len(state.pending) != 0 {
 		t.Fatalf("pending len after end=%d want=0", len(state.pending))
 	}
-	if endOut[0].RecordType != events.RecordTypeCommand {
-		t.Fatalf("end record_type=%q want=%q", endOut[0].RecordType, events.RecordTypeCommand)
+	if endOut.RecordType != events.RecordTypeCommand {
+		t.Fatalf("end record_type=%q want=%q", endOut.RecordType, events.RecordTypeCommand)
 	}
-	if endOut[0].EndTimestamp != end.Timestamp {
-		t.Fatalf("end_timestamp=%q want=%q", endOut[0].EndTimestamp, end.Timestamp)
+	if endOut.EndTimestamp != end.Timestamp {
+		t.Fatalf("end_timestamp=%q want=%q", endOut.EndTimestamp, end.Timestamp)
 	}
-	if endOut[0].DurationNS == nil || *endOut[0].DurationNS != durationNS {
-		t.Fatalf("duration_ns=%v want=%d", endOut[0].DurationNS, durationNS)
+	if endOut.DurationNS == nil || *endOut.DurationNS != durationNS {
+		t.Fatalf("duration_ns=%v want=%d", endOut.DurationNS, durationNS)
 	}
-	if endOut[0].ExitStatus == nil || *endOut[0].ExitStatus != exitStatus {
-		t.Fatalf("exit_status=%v want=%d", endOut[0].ExitStatus, exitStatus)
+	if endOut.ExitStatus == nil || *endOut.ExitStatus != exitStatus {
+		t.Fatalf("exit_status=%v want=%d", endOut.ExitStatus, exitStatus)
 	}
 }
 
-func TestMergeEventsSkipsCommandEndWhenNotRequired(t *testing.T) {
+func TestMergeEventsStreamingSkipsCommandEndWhenNotRequired(t *testing.T) {
 	t.Parallel()
 
 	start := events.CommandEvent{
@@ -167,25 +167,16 @@ func TestMergeEventsSkipsCommandEndWhenNotRequired(t *testing.T) {
 		ExitStatus: &exitStatus,
 	}
 
-	listGot := mergeEventsForList([]events.CommandEvent{start, end}, nil, false)
-	if len(listGot) != 1 {
-		t.Fatalf("list got len=%d want=1", len(listGot))
-	}
-	if listGot[0].EndTimestamp != "" || listGot[0].DurationNS != nil || listGot[0].ExitStatus != nil {
-		t.Fatalf("list output should keep start-only fields: %+v", listGot[0])
-	}
-
 	state := newCommandJoinState()
-	startOut := mergeEventsForStreaming(state, start, false)
-	if len(startOut) != 1 {
-		t.Fatalf("start out len=%d want=1", len(startOut))
+	_, keep := mergeEventForStreaming(state, start, false)
+	if !keep {
+		t.Fatalf("start event should be emitted without end processing")
 	}
 	if len(state.pending) != 0 {
 		t.Fatalf("pending must stay empty when end is disabled: %d", len(state.pending))
 	}
-	endOut := mergeEventsForStreaming(state, end, false)
-	if len(endOut) != 0 {
-		t.Fatalf("end out len=%d want=0", len(endOut))
+	if _, keep := mergeEventForStreaming(state, end, false); keep {
+		t.Fatalf("end event should be skipped")
 	}
 }
 
@@ -214,19 +205,19 @@ func TestMergeEventsDurationQueryMatchesOnlyFinalizedRecord(t *testing.T) {
 		DurationNS: &durationNS,
 	}
 
-	startOut := mergeEventsForStreaming(state, start, true)
-	if len(startOut) != 1 {
-		t.Fatalf("start out len=%d want=1", len(startOut))
+	startOut, keep := mergeEventForStreaming(state, start, true)
+	if !keep {
+		t.Fatalf("start event should be emitted")
 	}
-	if matchFilter(startOut[0], lf) {
+	if matchFilter(startOut, lf) {
 		t.Fatalf("provisional record must not match duration query")
 	}
 
-	endOut := mergeEventsForStreaming(state, end, true)
-	if len(endOut) != 1 {
-		t.Fatalf("end out len=%d want=1", len(endOut))
+	endOut, keep := mergeEventForStreaming(state, end, true)
+	if !keep {
+		t.Fatalf("end event should finalize the command")
 	}
-	if !matchFilter(endOut[0], lf) {
+	if !matchFilter(endOut, lf) {
 		t.Fatalf("finalized record must match duration query")
 	}
 }

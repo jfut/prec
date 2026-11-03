@@ -329,15 +329,19 @@ compress_level = 0
 func TestLoadRejectInvalidFileSaveDedupSec(t *testing.T) {
 	t.Parallel()
 
-	d := t.TempDir()
-	p := filepath.Join(d, "invalid-file-save-dedup-sec.conf")
-	if err := os.WriteFile(p, []byte(`file_save_dedup_sec = -1
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := Load(p); err == nil {
-		t.Fatalf("expected error for invalid file_save_dedup_sec")
+	for _, value := range []string{"-1", "9223372037"} {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			d := t.TempDir()
+			p := filepath.Join(d, "invalid-file-save-dedup-sec.conf")
+			body := fmt.Sprintf("file_save_dedup_sec = %s\n", value)
+			if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(p); err == nil {
+				t.Fatalf("expected error for invalid file_save_dedup_sec")
+			}
+		})
 	}
 }
 

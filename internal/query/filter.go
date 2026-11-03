@@ -6,10 +6,8 @@ package query
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jfut/prec/internal/events"
@@ -17,17 +15,19 @@ import (
 
 var operators = []string{"!~=", ">=", "<=", "!=", "~=", ">", "<", "="}
 
-var (
-	commandEventFieldIndexOnce sync.Once
-	commandEventFieldIndex     map[string]int
-)
-
 const (
 	fieldTypeString   = "string"
 	fieldTypeNumber   = "number"
 	fieldTypeTime     = "time"
 	fieldTypeArray    = "array"
 	fieldTypeDuration = "duration"
+
+	secondsPerMinute = int64(60)
+	secondsPerHour   = int64(60 * 60)
+	secondsPerDay    = int64(24 * 60 * 60)
+	secondsPerMonth  = int64(30 * 24 * 60 * 60)
+	secondsPerYear   = int64(365 * 24 * 60 * 60)
+	maxDurationSec   = int64(1<<63-1) / int64(time.Second)
 )
 
 // Predicate evaluates whether one event satisfies one condition.
@@ -453,59 +453,54 @@ func stringValue(field string, ev events.CommandEvent) string {
 }
 
 func hasCommandEventField(key string) bool {
-	initCommandEventFieldIndex()
-	_, ok := commandEventFieldIndex[key]
-	return ok
+	switch key {
+	case "timestamp", "end_timestamp", "event_id", "uid", "gid", "auid", "session_id",
+		"user", "group", "pid", "ppid", "comm", "exe", "cwd", "argv", "argc",
+		"cgroup", "tty", "tty_nr", "source", "record_type", "exit_status", "duration_ns",
+		"exec_errno", "exec_error", "lost_samples", "lost_samples_total", "parent_comm",
+		"parent_exe", "parent_cmdline", "parent_tty", "parent_tty_nr", "file_path", "file_fd",
+		"file_bytes", "file_flags", "file_dev", "file_ino":
+		return true
+	default:
+		return false
+	}
 }
 
 func commandEventFieldStringValue(key string, ev events.CommandEvent) (string, bool) {
-	initCommandEventFieldIndex()
-	idx, ok := commandEventFieldIndex[key]
-	if !ok {
+	switch key {
+	case "event_id":
+		return ev.EventID, true
+	case "user":
+		return ev.User, true
+	case "group":
+		return ev.Group, true
+	case "comm":
+		return ev.Comm, true
+	case "exe":
+		return ev.Exe, true
+	case "cwd":
+		return ev.Cwd, true
+	case "cgroup":
+		return ev.Cgroup, true
+	case "tty":
+		return ev.TTY, true
+	case "source":
+		return ev.Source, true
+	case "exec_error":
+		return ev.ExecError, true
+	case "parent_comm":
+		return ev.ParentComm, true
+	case "parent_exe":
+		return ev.ParentExe, true
+	case "parent_cmdline":
+		return ev.ParentCmdline, true
+	case "parent_tty":
+		return ev.ParentTTY, true
+	case "file_path":
+		return ev.FilePath, true
+	default:
 		return "", false
 	}
-	v := reflect.ValueOf(ev).Field(idx)
-	return stringifyReflectValue(v), true
-}
-
-func initCommandEventFieldIndex() {
-	commandEventFieldIndexOnce.Do(func() {
-		t := reflect.TypeOf(events.CommandEvent{})
-		idx := make(map[string]int, t.NumField())
-		for i := 0; i < t.NumField(); i++ {
-			f := t.Field(i)
-			tag := f.Tag.Get("json")
-			if tag == "" {
-				continue
-			}
-			name := strings.TrimSpace(strings.Split(tag, ",")[0])
-			if name == "" || name == "-" {
-				continue
-			}
-			idx[name] = i
-		}
-		commandEventFieldIndex = idx
-	})
-}
-
-func stringifyReflectValue(v reflect.Value) string {
-	if !v.IsValid() {
-		return ""
-	}
-	if v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			return ""
-		}
-		return stringifyReflectValue(v.Elem())
-	}
-	if v.Kind() == reflect.Slice && v.Type().Elem().Kind() == reflect.String {
-		parts := make([]string, v.Len())
-		for i := 0; i < v.Len(); i++ {
-			parts[i] = v.Index(i).String()
-		}
-		return strings.Join(parts, " ")
-	}
-	return fmt.Sprint(v.Interface())
 }
 
 func timeValue(field string, ev events.CommandEvent) (time.Time, bool) {
@@ -537,33 +532,47 @@ func parseQueryTime(raw string) (time.Time, error) {
 
 // ParseDurationValue parses YYYY-MM-DD HH:MM:SS into nanoseconds.
 func ParseDurationValue(raw string) (int64, error) {
-	const (
-		secPerMinute = int64(60)
-		secPerHour   = int64(60 * 60)
-		secPerDay    = int64(24 * 60 * 60)
-		secPerMonth  = int64(30 * 24 * 60 * 60)
-		secPerYear   = int64(365 * 24 * 60 * 60)
-	)
-
 	trimmed := strings.TrimSpace(raw)
-	var years, months, days, hours, minutes, seconds int64
-	n, err := fmt.Sscanf(trimmed, "%d-%d-%d %d:%d:%d", &years, &months, &days, &hours, &minutes, &seconds)
-	if err != nil || n != 6 {
+	dateTime := strings.Fields(trimmed)
+	if len(dateTime) != 2 {
 		return 0, errors.New("invalid duration format")
 	}
-	if years < 0 || months < 0 || days < 0 || hours < 0 || minutes < 0 || seconds < 0 {
-		return 0, errors.New("duration must be non-negative")
+	dateParts := strings.Split(dateTime[0], "-")
+	timeParts := strings.Split(dateTime[1], ":")
+	if len(dateParts) != 3 || len(timeParts) != 3 {
+		return 0, errors.New("invalid duration format")
 	}
+	parts := append(dateParts, timeParts...)
+	values := make([]int64, len(parts))
+	for i, part := range parts {
+		if part == "" {
+			return 0, errors.New("invalid duration format")
+		}
+		for _, digit := range part {
+			if digit < '0' || digit > '9' {
+				return 0, errors.New("invalid duration format")
+			}
+		}
+		value, err := strconv.ParseInt(part, 10, 64)
+		if err != nil {
+			return 0, errors.New("invalid duration format")
+		}
+		values[i] = value
+	}
+	months, days := values[1], values[2]
+	hours, minutes, seconds := values[3], values[4], values[5]
 	if months >= 12 || days >= 31 || hours >= 24 || minutes >= 60 || seconds >= 60 {
 		return 0, errors.New("duration component out of range")
 	}
 
-	totalSec := years*secPerYear +
-		months*secPerMonth +
-		days*secPerDay +
-		hours*secPerHour +
-		minutes*secPerMinute +
-		seconds
+	units := [...]int64{secondsPerYear, secondsPerMonth, secondsPerDay, secondsPerHour, secondsPerMinute, 1}
+	var totalSec int64
+	for i, value := range values {
+		if value > (maxDurationSec-totalSec)/units[i] {
+			return 0, errors.New("duration is too large")
+		}
+		totalSec += value * units[i]
+	}
 	return totalSec * int64(time.Second), nil
 }
 
@@ -573,29 +582,21 @@ func FormatDurationValue(durationNS *int64) string {
 		return ""
 	}
 
-	const (
-		secPerMinute = int64(60)
-		secPerHour   = int64(60 * 60)
-		secPerDay    = int64(24 * 60 * 60)
-		secPerMonth  = int64(30 * 24 * 60 * 60)
-		secPerYear   = int64(365 * 24 * 60 * 60)
-	)
-
 	totalSec := *durationNS / int64(time.Second)
 	if totalSec < 0 {
 		totalSec = 0
 	}
 
-	years := totalSec / secPerYear
-	totalSec %= secPerYear
-	months := totalSec / secPerMonth
-	totalSec %= secPerMonth
-	days := totalSec / secPerDay
-	totalSec %= secPerDay
-	hours := totalSec / secPerHour
-	totalSec %= secPerHour
-	minutes := totalSec / secPerMinute
-	seconds := totalSec % secPerMinute
+	years := totalSec / secondsPerYear
+	totalSec %= secondsPerYear
+	months := totalSec / secondsPerMonth
+	totalSec %= secondsPerMonth
+	days := totalSec / secondsPerDay
+	totalSec %= secondsPerDay
+	hours := totalSec / secondsPerHour
+	totalSec %= secondsPerHour
+	minutes := totalSec / secondsPerMinute
+	seconds := totalSec % secondsPerMinute
 
 	return fmt.Sprintf("%04d-%02d-%02d %02d:%02d:%02d", years, months, days, hours, minutes, seconds)
 }

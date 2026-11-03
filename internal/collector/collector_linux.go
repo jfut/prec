@@ -123,14 +123,12 @@ type ioAttempt struct {
 	tgid      int
 	fd        int
 	timestamp uint64
-	filePath  string
 }
 
 type dupAttempt struct {
-	tgid      int
-	oldfd     int
-	newfd     int
-	timestamp uint64
+	tgid  int
+	oldfd int
+	newfd int
 }
 
 type fileDescriptorKey struct {
@@ -140,7 +138,6 @@ type fileDescriptorKey struct {
 
 type openFileState struct {
 	event                 events.CommandEvent
-	startMonoNS           uint64
 	identity              fileIdentity
 	lastIdentityCheckMono uint64
 }
@@ -195,10 +192,9 @@ type Service struct {
 }
 
 type kernelTimeConverter struct {
-	mu         sync.RWMutex
-	offsetNS   int64
-	convCount  uint64
-	lastUpdate time.Time
+	mu        sync.RWMutex
+	offsetNS  int64
+	convCount uint64
 }
 
 func newKernelTimeConverter() (*kernelTimeConverter, error) {
@@ -239,7 +235,6 @@ func (c *kernelTimeConverter) refresh() error {
 	offset := unix.TimespecToNsec(realTS) - unix.TimespecToNsec(monoTS)
 	c.mu.Lock()
 	c.offsetNS = offset
-	c.lastUpdate = time.Now()
 	c.mu.Unlock()
 	return nil
 }
@@ -590,10 +585,10 @@ func (s *Service) Run(stop <-chan struct{}) error {
 				continue
 			}
 			if !ok {
-				s.rememberOpenFileFallback(tgid, int(rawStatus), timestamp, kernelMonoNS)
+				s.rememberOpenFileFallback(tgid, int(rawStatus), timestamp)
 				continue
 			}
-			s.rememberOpenFile(tgid, int(rawStatus), fileOpenEvent, kernelMonoNS)
+			s.rememberOpenFile(tgid, int(rawStatus), fileOpenEvent)
 			if !s.cfg.CollectFileOpen {
 				continue
 			}
@@ -607,7 +602,7 @@ func (s *Service) Run(stop <-chan struct{}) error {
 				return fmt.Errorf("write file open event: %w", err)
 			}
 		case perfEventTypeDupEnter:
-			s.rememberDupAttempt(tid, tgid, int(rawStatus), int(rawStatus2), kernelMonoNS)
+			s.rememberDupAttempt(tid, tgid, int(rawStatus), int(rawStatus2))
 		case perfEventTypeDupResult:
 			if rawStatus < 0 {
 				s.dropDupAttempt(tid)
@@ -619,7 +614,7 @@ func (s *Service) Run(stop <-chan struct{}) error {
 			if fd < 0 {
 				continue
 			}
-			s.rememberIOAttempt(s.pendingWrite, tid, tgid, fd, kernelMonoNS, false)
+			s.rememberIOAttempt(s.pendingWrite, tid, tgid, fd, kernelMonoNS)
 		case perfEventTypeWriteResult:
 			if rawStatus <= 0 {
 				s.dropIOAttempt(s.pendingWrite, tid)
@@ -1411,13 +1406,13 @@ func (s *Service) dropFileOpenAttempt(tid int) {
 	delete(s.pendingOpen, tid)
 }
 
-func (s *Service) rememberDupAttempt(tid int, tgid int, oldfd int, newfd int, kernelMonoNS uint64) {
+func (s *Service) rememberDupAttempt(tid int, tgid int, oldfd int, newfd int) {
 	if tid <= 0 || oldfd < 0 || newfd < 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pendingDup[tid] = dupAttempt{tgid: tgid, oldfd: oldfd, newfd: newfd, timestamp: kernelMonoNS}
+	s.pendingDup[tid] = dupAttempt{tgid: tgid, oldfd: oldfd, newfd: newfd}
 }
 
 func (s *Service) takeDupAttempt(tid int) (dupAttempt, bool) {
@@ -1469,7 +1464,7 @@ func (s *Service) rememberDuplicatedFile(tid int) {
 		}
 		openEvent := events.BuildFileOpenEvent(base, path, attempt.oldfd, 0)
 		setFileIdentity(&openEvent, identity)
-		openState = openFileState{event: openEvent, startMonoNS: attempt.timestamp, identity: identity}
+		openState = openFileState{event: openEvent, identity: identity}
 	}
 	s.mu.Lock()
 	s.openFiles[newKey] = openState
@@ -1510,7 +1505,7 @@ func (s *Service) buildFileOpenEvent(tid int, fd int, timestamp string) (events.
 	return openEvent, true, nil
 }
 
-func (s *Service) rememberOpenFile(tgid int, fd int, openEvent events.CommandEvent, startMonoNS uint64) {
+func (s *Service) rememberOpenFile(tgid int, fd int, openEvent events.CommandEvent) {
 	if tgid <= 0 || fd < 0 {
 		return
 	}
@@ -1518,13 +1513,12 @@ func (s *Service) rememberOpenFile(tgid int, fd int, openEvent events.CommandEve
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.openFiles[key] = openFileState{
-		event:       openEvent,
-		startMonoNS: startMonoNS,
-		identity:    fileIdentityFromEvent(openEvent),
+		event:    openEvent,
+		identity: fileIdentityFromEvent(openEvent),
 	}
 }
 
-func (s *Service) rememberOpenFileFallback(tgid int, fd int, timestamp string, startMonoNS uint64) {
+func (s *Service) rememberOpenFileFallback(tgid int, fd int, timestamp string) {
 	if tgid <= 0 || fd < 0 {
 		return
 	}
@@ -1544,21 +1538,17 @@ func (s *Service) rememberOpenFileFallback(tgid int, fd int, timestamp string, s
 	key := fileDescriptorKey{tgid: tgid, fd: fd}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.openFiles[key] = openFileState{event: openEvent, startMonoNS: startMonoNS, identity: identity}
+	s.openFiles[key] = openFileState{event: openEvent, identity: identity}
 	debugFileEventf("open-fallback tgid=%d fd=%d tracked path=%s", tgid, fd, path)
 }
 
-func (s *Service) rememberIOAttempt(pool map[int]ioAttempt, tid int, tgid int, fd int, kernelMonoNS uint64, snapshotPath bool) {
+func (s *Service) rememberIOAttempt(pool map[int]ioAttempt, tid int, tgid int, fd int, kernelMonoNS uint64) {
 	if tid <= 0 || fd < 0 {
 		return
 	}
-	filePath := ""
-	if snapshotPath {
-		filePath = resolveProcessFDPath(tgid, fd)
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pool[tid] = ioAttempt{tgid: tgid, fd: fd, timestamp: kernelMonoNS, filePath: filePath}
+	pool[tid] = ioAttempt{tgid: tgid, fd: fd, timestamp: kernelMonoNS}
 }
 
 func (s *Service) takeIOAttempt(pool map[int]ioAttempt, tid int) (ioAttempt, bool) {

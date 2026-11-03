@@ -116,6 +116,74 @@ func TestJSONLWriterReopenAfterClose(t *testing.T) {
 	if err := w.Reopen(); err == nil {
 		t.Fatalf("Reopen should fail on closed writer")
 	}
+	if err := w.WriteEvent(events.CommandEvent{}); err == nil {
+		t.Fatalf("WriteEvent should fail on closed writer")
+	}
+}
+
+func TestJSONLWriterRejectsSymlinkPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.log")
+	logPath := filepath.Join(dir, "prec.log")
+	if err := os.WriteFile(target, []byte("protected\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, logPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewJSONLWriter(logPath, config.CompressNo, 0); err == nil {
+		t.Fatalf("NewJSONLWriter should reject a symbolic link")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "protected\n" {
+		t.Fatalf("symlink target changed: %q", got)
+	}
+}
+
+func TestJSONLWriterRejectsHardLinkPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.log")
+	logPath := filepath.Join(dir, "prec.log")
+	if err := os.WriteFile(target, []byte("protected\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(target, logPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewJSONLWriter(logPath, config.CompressNo, 0); err == nil {
+		t.Fatalf("NewJSONLWriter should reject a hard link")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "protected\n" {
+		t.Fatalf("hard-link target changed: %q", got)
+	}
+}
+
+func TestJSONLWriterRejectsSymlinkParentDirectory(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	targetDir := t.TempDir()
+	linkDir := filepath.Join(parent, "logs")
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewJSONLWriter(filepath.Join(linkDir, "prec.log"), config.CompressNo, 0); err == nil {
+		t.Fatalf("NewJSONLWriter should reject a symbolic link in the parent path")
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "prec.log")); !os.IsNotExist(err) {
+		t.Fatalf("log file should not be created through parent symlink: err=%v", err)
+	}
 }
 
 func readEvents(path string, mode string) ([]events.CommandEvent, error) {

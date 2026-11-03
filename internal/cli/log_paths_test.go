@@ -26,6 +26,9 @@ func TestResolveLogPaths(t *testing.T) {
 			t.Fatalf("write file: %v", err)
 		}
 	}
+	if err := os.Symlink(currentLog, filepath.Join(tmpDir, "prec.log.0")); err != nil {
+		t.Fatalf("create rotated-log symlink: %v", err)
+	}
 
 	base := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
 	if err := os.Chtimes(rotatedGzip, base, base); err != nil {
@@ -64,4 +67,26 @@ func TestResolveLogPaths(t *testing.T) {
 			t.Fatalf("got=%v want=%v", got, want)
 		}
 	})
+}
+
+func TestResolveLogPathsSkipsSymlinkOnlyDirectory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.log")
+	logPath := filepath.Join(dir, "prec.log")
+	if err := os.WriteFile(target, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, logPath); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveLogPaths(logPath, true)
+	if err != nil {
+		t.Fatalf("resolveLogPaths: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got=%v want no regular logs", got)
+	}
 }

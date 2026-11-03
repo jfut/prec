@@ -16,6 +16,17 @@ import (
 )
 
 const maxLogCompressionLayers = 4
+const maxLogZstdMemory = 64 * 1024 * 1024
+
+// newLogZstdDecoder bounds memory and parallelism for compressed log input.
+func newLogZstdDecoder(src io.Reader) (*zstd.Decoder, error) {
+	return zstd.NewReader(
+		src,
+		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderMaxMemory(maxLogZstdMemory),
+		zstd.WithDecoderMaxWindow(maxLogZstdMemory),
+	)
+}
 
 func openLogReader(logPath string) (io.ReadCloser, error) {
 	f, err := os.Open(logPath)
@@ -27,11 +38,6 @@ func openLogReader(logPath string) (io.ReadCloser, error) {
 }
 
 func detectLogCompression(logPath string, hint string) (string, error) {
-	modeBySuffix := detectCompressionBySuffix(logPath)
-	if modeBySuffix != logCompressionNone {
-		return modeBySuffix, nil
-	}
-
 	f, err := os.Open(logPath)
 	if err != nil {
 		return "", err
@@ -43,21 +49,12 @@ func detectLogCompression(logPath string, hint string) (string, error) {
 		return modeByMagic, nil
 	}
 
+	// An empty or partially written stream may not expose its frame header yet.
 	normalizedHint := strings.ToLower(strings.TrimSpace(hint))
 	if normalizedHint == logCompressionGzip || normalizedHint == logCompressionZstd {
 		return normalizedHint, nil
 	}
 	return logCompressionNone, nil
-}
-
-func detectCompressionBySuffix(logPath string) string {
-	if strings.HasSuffix(logPath, ".gz") {
-		return logCompressionGzip
-	}
-	if strings.HasSuffix(logPath, ".zst") {
-		return logCompressionZstd
-	}
-	return logCompressionNone
 }
 
 func detectCompressionByMagic(r *bufio.Reader) string {
@@ -85,7 +82,7 @@ func newCompressedTailReader() *compressedTailReader {
 	return &compressedTailReader{}
 }
 
-func (r *compressedTailReader) Reset(mode string, onLine func(string)) error {
+func (r *compressedTailReader) Reset(mode string, onLine func([]byte)) error {
 	// After copytruncate, restart decoding from the beginning of the new compressed stream.
 	r.Close()
 	mode = strings.ToLower(strings.TrimSpace(mode))
@@ -110,7 +107,7 @@ func (r *compressedTailReader) Reset(mode string, onLine func(string)) error {
 	return nil
 }
 
-func decodeCompressedTailStream(mode string, src io.Reader, onLine func(string)) error {
+func decodeCompressedTailStream(mode string, src io.Reader, onLine func([]byte)) error {
 	switch mode {
 	case logCompressionGzip:
 		br := bufio.NewReader(src)
@@ -129,7 +126,7 @@ func decodeCompressedTailStream(mode string, src io.Reader, onLine func(string))
 			}
 		}
 	case logCompressionZstd:
-		dec, err := zstd.NewReader(src)
+		dec, err := newLogZstdDecoder(src)
 		if err != nil {
 			return err
 		}
@@ -140,12 +137,12 @@ func decodeCompressedTailStream(mode string, src io.Reader, onLine func(string))
 	}
 }
 
-func scanDecompressedLines(reader io.Reader, onLine func(string)) error {
+func scanDecompressedLines(reader io.Reader, onLine func([]byte)) error {
 	scanner := bufio.NewScanner(reader)
-	// Keep follow mode aligned with max_arg_length by allowing lines up to 1MB.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// Bound memory for malformed logs while allowing escaped maximum-size argv records.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLogLineLength)
 	for scanner.Scan() {
-		onLine(scanner.Text())
+		onLine(scanner.Bytes())
 	}
 	return scanner.Err()
 }
@@ -209,12 +206,9 @@ func openLayeredLogReader(logPath string, base io.ReadCloser) (io.ReadCloser, er
 	var reader io.Reader = base
 	closers := []io.Closer{base}
 
-	for depth := range maxLogCompressionLayers {
+	for range maxLogCompressionLayers {
 		bufReader := bufio.NewReader(reader)
 		mode := detectCompressionByMagic(bufReader)
-		if mode == logCompressionNone && depth == 0 {
-			mode = detectCompressionBySuffix(logPath)
-		}
 		if mode == logCompressionNone {
 			return &readerWithCloser{
 				reader: bufReader,
@@ -248,7 +242,7 @@ func openCompressedLogLayer(mode string, src io.Reader) (io.Reader, io.Closer, e
 		return gzReader, gzReader, nil
 	case logCompressionZstd:
 		// Unwrap zstd frames written by precd and pass JSONL to event decoding.
-		dec, err := zstd.NewReader(src)
+		dec, err := newLogZstdDecoder(src)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -129,14 +129,6 @@ func resolveInputLogSetting(configPath string, inputPath string) (string, string
 	return cfg.LogPath, cfg.Compress, nil
 }
 
-func resolveInputLogPath(configPath string, inputPath string) (string, error) {
-	logPath, _, err := resolveInputLogSetting(configPath, inputPath)
-	if err != nil {
-		return "", err
-	}
-	return logPath, nil
-}
-
 func effectiveQuerySpecs(cli rootCLI) []string {
 	specs := append([]string(nil), cli.Query...)
 	switch {
